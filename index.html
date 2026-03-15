@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CoinEx Pro Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="noise"></div>
+
+  <div class="app-shell">
+
+    <!-- SIDEBAR -->
+    <nav class="sidebar">
+      <div class="sidebar-logo">
+        <div class="logo-mark">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+            <polygon points="11,1 21,6 21,16 11,21 1,16 1,6" stroke="currentColor" stroke-width="1.5" fill="none"/>
+            <polygon points="11,5 17,8.5 17,15.5 11,19 5,15.5 5,8.5" fill="currentColor" opacity="0.2"/>
+            <circle cx="11" cy="11" r="2.5" fill="currentColor"/>
+          </svg>
+        </div>
+        <span class="logo-text">CoinEx<em>Pro</em></span>
+      </div>
+
+      <div class="sidebar-nav">
+        <a href="#" class="nav-item active" data-section="dashboard">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.7"/><rect x="9" y="1" width="6" height="6" rx="1.5" fill="currentColor"/><rect x="1" y="9" width="6" height="6" rx="1.5" fill="currentColor"/><rect x="9" y="9" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.7"/></svg>
+          Dashboard
+        </a>
+        <a href="#" class="nav-item" data-section="signal">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v12M4 5l4-3 4 3M4 11l4 3 4-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Señal
+        </a>
+        <a href="#" class="nav-item" data-section="scanner">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Scanner
+        </a>
+        <a href="#" class="nav-item" data-section="trades">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8h12M9 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Trades
+        </a>
+        <a href="#" class="nav-item" data-section="auto">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M6 8l1.5 1.5L10 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Auto
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="status-pill" id="sidebarHealth">
+          <span class="pulse-dot"></span>
+          <span id="healthBadge">Conectando</span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <div class="main-area">
+
+      <!-- TOP BAR -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 class="page-title">Dashboard</h1>
+          <span class="page-sub">Monitor general del sistema</span>
+        </div>
+
+        <div class="topbar-right">
+          <div class="stat-chip">
+            <span>USDT</span>
+            <strong id="topUsdtBalance">—</strong>
+          </div>
+          <div class="stat-chip">
+            <span>Bot</span>
+            <strong id="botStatus">—</strong>
+          </div>
+          <div class="auto-chip" id="autoChip">
+            <div class="auto-chip-inner">
+              <div class="auto-chip-label">
+                <span>Auto Trading</span>
+                <strong id="autoStatusLabel">—</strong>
+              </div>
+              <button id="autoToggleBtn" class="toggle-btn" aria-label="Cambiar estado de auto trading">
+                <span></span>
+              </button>
+            </div>
+          </div>
+          <button id="refreshBtn" class="icon-btn" title="Refrescar dashboard">
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M13 7.5A5.5 5.5 0 112.5 5M1 2v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- CONTENT SCROLL -->
+      <div class="content-scroll">
+
+        <!-- SYSTEM STATUS CARDS -->
+        <div class="kpi-row">
+          <div class="kpi-card">
+            <div class="kpi-icon kpi-blue">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M9 5v4l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </div>
+            <div class="kpi-info">
+              <span>Última acción</span>
+              <strong id="botAction">—</strong>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon kpi-green">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 9l4 4 8-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div class="kpi-info">
+              <span>Símbolos</span>
+              <strong id="symbolsCount">—</strong>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon kpi-red">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M9 6v3M9 12v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </div>
+            <div class="kpi-info">
+              <span>Error</span>
+              <strong id="botError">—</strong>
+            </div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-icon kpi-amber">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="4" width="14" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 4V3a1 1 0 011-1h4a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.5"/></svg>
+            </div>
+            <div class="kpi-info">
+              <span>Estado bot</span>
+              <strong id="botStatusPanel">—</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- TWO-COLUMN GRID -->
+        <div class="grid-2col">
+
+          <!-- LEFT: SIGNAL CONFIG -->
+          <div class="col-main">
+
+            <!-- SIGNAL ALERT BANNER -->
+            <div id="signalAlert" class="signal-banner neutral">
+              <div class="signal-banner-icon">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2l2.5 5 5.5.8-4 3.9.9 5.5L10 14.5l-4.9 2.7.9-5.5L2 7.8l5.5-.8L10 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+              </div>
+              <span>Sin datos de señal</span>
+              <div id="signalExtraInfo" class="banner-extra">—</div>
+            </div>
+
+            <!-- SIGNAL CONFIG PANEL -->
+            <div class="panel" id="signal-section">
+              <div class="panel-header">
+                <div>
+                  <h3>Configurar señal</h3>
+                  <p>Parámetros de análisis MTF</p>
+                </div>
+                <div class="panel-score">
+                  <span>Score</span>
+                  <strong id="signalScore">—</strong>
+                </div>
+              </div>
+
+              <div class="config-form">
+                <div class="form-row">
+                  <div class="field">
+                    <label for="symbolSearch">Buscar símbolo</label>
+                    <div class="input-icon-wrap">
+                      <svg class="input-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10 10l2.5 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                      <input id="symbolSearch" type="text" placeholder="ETH, PEPE, BONK..." />
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label for="symbol">Símbolo</label>
+                    <select id="symbol"></select>
+                    <small id="symbolHint" class="hint">Cargando mercados...</small>
+                  </div>
+                  <div class="field">
+                    <label for="memeOnly">Filtro</label>
+                    <select id="memeOnly">
+                      <option value="all" selected>Todos los activos</option>
+                      <option value="meme">Solo meme-like</option>
+                      <option value="normal">Ocultar meme-like</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="field">
+                    <label for="signalPeriod">Trigger timeframe</label>
+                    <div class="pill-select" id="signalPeriodPills">
+                      <button class="pill" data-val="1min">1m</button>
+                      <button class="pill" data-val="3min">3m</button>
+                      <button class="pill active" data-val="5min">5m</button>
+                      <button class="pill" data-val="15min">15m</button>
+                      <button class="pill" data-val="30min">30m</button>
+                      <button class="pill" data-val="1hour">1h</button>
+                    </div>
+                    <input type="hidden" id="signalPeriod" value="5min" />
+                  </div>
+                  <div class="field">
+                    <label for="percent">Balance base</label>
+                    <div class="pill-select" id="percentPills">
+                      <button class="pill" data-val="5">5%</button>
+                      <button class="pill" data-val="10">10%</button>
+                      <button class="pill" data-val="15">15%</button>
+                      <button class="pill active" data-val="20">20%</button>
+                      <button class="pill" data-val="25">25%</button>
+                      <button class="pill" data-val="50">50%</button>
+                      <button class="pill" data-val="75">75%</button>
+                      <button class="pill" data-val="100">100%</button>
+                    </div>
+                    <input type="hidden" id="percent" value="20" />
+                  </div>
+                </div>
+
+                <div class="form-row tight">
+                  <div class="field">
+                    <label for="sl">Stop Loss %</label>
+                    <div class="number-input-wrap">
+                      <input id="sl" type="number" min="0.1" step="0.1" value="1" />
+                      <span class="input-unit">%</span>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label for="tp">Take Profit %</label>
+                    <div class="number-input-wrap">
+                      <input id="tp" type="number" min="0.1" step="0.1" value="2" />
+                      <span class="input-unit">%</span>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label>Mercado</label>
+                    <div class="market-pill" id="marketPreview">—</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel-actions">
+                <button id="refreshSignalBtn" class="btn btn-ghost">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M12 7A5 5 0 112.2 4.5M1 2v3.5h3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  Actualizar señal
+                </button>
+                <button id="previewBtn" class="btn btn-primary">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.8 3.6L13 5.3l-3 2.9.7 4.1L7 10.4l-3.7 1.9.7-4.1-3-2.9 4.2-.7L7 1z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                  Crear preview
+                </button>
+                <button id="reloadSymbolsBtn" class="btn btn-ghost">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.4"/><path d="M9.5 4.5v3h-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  Recargar símbolos
+                </button>
+              </div>
+
+              <div id="resultBox" class="result-box hidden" aria-live="polite"></div>
+            </div>
+
+            <!-- SIGNAL METRICS -->
+            <div class="panel" id="scanner-section">
+              <div class="panel-header">
+                <div>
+                  <h3>Métricas de señal</h3>
+                  <p>Análisis multi-timeframe</p>
+                </div>
+                <div class="badge-row">
+                  <span class="badge" id="metricEdge">Edge: —</span>
+                  <span class="badge" id="metricRegime">Régimen: —</span>
+                </div>
+              </div>
+
+              <div class="metrics-strip">
+                <div class="metric-pill">
+                  <span>Long</span>
+                  <div class="metric-bar-wrap"><div class="metric-bar blue" id="metricLongBar"></div></div>
+                  <strong id="metricLongProb">—</strong>
+                </div>
+                <div class="metric-pill">
+                  <span>Short</span>
+                  <div class="metric-bar-wrap"><div class="metric-bar red" id="metricShortBar"></div></div>
+                  <strong id="metricShortProb">—</strong>
+                </div>
+              </div>
+
+              <div class="metrics-grid">
+                <div class="metric-tile">
+                  <span>Acción</span>
+                  <strong id="signalAction">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>Bias 1h</span>
+                  <strong id="metricBias1h">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>Bias 15m</span>
+                  <strong id="metricBias15m">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>Bias trigger</span>
+                  <strong id="metricBiasTrigger">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>RSI 5m</span>
+                  <strong id="metricRsi5">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>RSI 15m</span>
+                  <strong id="metricRsi15">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>RSI 1h</span>
+                  <strong id="metricRsi1h">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>ATR Ratio</span>
+                  <strong id="metricAtrRatio">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>OI Ratio</span>
+                  <strong id="metricOiRatio">—</strong>
+                </div>
+                <div class="metric-tile">
+                  <span>Vol Ratio</span>
+                  <strong id="metricVolumeRatio">—</strong>
+                </div>
+              </div>
+            </div>
+
+            <!-- SCANNER -->
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <h3>Oportunidades</h3>
+                  <p>Escaneo del mercado en tiempo real</p>
+                </div>
+              </div>
+              <div id="scannerAlertBox" class="list-stack">
+                <div class="empty-state">
+                  <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="14" cy="14" r="9" stroke="currentColor" stroke-width="1.5" opacity="0.4"/><path d="M21 21l6 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/></svg>
+                  <p>Sin oportunidades destacadas</p>
+                </div>
+              </div>
+              <pre id="scannerStatsBox" class="stats-pre">Sin estadísticas de scanner todavía.</pre>
+            </div>
+
+            <!-- AUTO TRADING -->
+            <div class="panel" id="auto-section">
+              <div class="panel-header">
+                <div>
+                  <h3>Auto Trading</h3>
+                  <p>Actividad automática del bot</p>
+                </div>
+              </div>
+              <div class="auto-panels">
+                <div>
+                  <p class="subhead">
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 6l1.5 1.5L8 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                    Abiertas automáticamente
+                  </p>
+                  <div id="autoOpenedBox" class="list-stack compact">
+                    <div class="empty-state small">Sin aperturas automáticas.</div>
+                  </div>
+                </div>
+                <div>
+                  <p class="subhead">
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="2" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 6h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                    Cerradas automáticamente
+                  </p>
+                  <div id="autoClosedBox" class="list-stack compact">
+                    <div class="empty-state small">Sin cierres automáticos.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- TRADES ACTIVOS -->
+            <div class="panel" id="trades-section">
+              <div class="panel-header">
+                <div>
+                  <h3>Trades activos</h3>
+                  <p>Posiciones abiertas en monitoreo</p>
+                </div>
+              </div>
+              <div id="tradesBox" class="list-stack">
+                <div class="empty-state">
+                  <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M4 16h24M16 4l12 12-12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.4"/></svg>
+                  <p>Sin trades activos</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- ESTADO INTERNO -->
+            <details class="panel collapsible">
+              <summary>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1.5" y="1.5" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M4 7h6M4 5h6M4 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                Estado interno
+                <svg class="chevron" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </summary>
+              <pre id="rawStatus">Sin datos</pre>
+            </details>
+          </div>
+
+          <!-- RIGHT: DRAFTS SIDEBAR -->
+          <div class="col-side">
+            <div class="panel sticky-panel">
+              <div class="panel-header">
+                <div>
+                  <h3>Previews</h3>
+                  <p>Listos para ejecutar</p>
+                </div>
+                <span class="count-badge" id="draftsCount">0</span>
+              </div>
+              <div id="draftsBox" class="list-stack compact">
+                <div class="empty-state">
+                  <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="5" y="5" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.4" opacity="0.4"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.4"/></svg>
+                  <p>Sin previews pendientes</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+
+  <script>
+    // Pill select logic
+    document.querySelectorAll('.pill-select').forEach(group => {
+      group.querySelectorAll('.pill').forEach(btn => {
+        btn.addEventListener('click', () => {
+          group.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const hiddenInput = document.getElementById(
+            group.id === 'signalPeriodPills' ? 'signalPeriod' : 'percent'
+          );
+          if (hiddenInput) hiddenInput.value = btn.dataset.val;
+        });
+      });
+    });
+
+    // Nav highlight
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', e => {
+        e.preventDefault();
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+      });
+    });
+
+    // Refresh spin
+    const refreshBtn = document.getElementById('refreshBtn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => {
+        refreshBtn.classList.add('spinning');
+        setTimeout(() => refreshBtn.classList.remove('spinning'), 600);
+      });
+    }
+  </script>
+</body>
+</html>

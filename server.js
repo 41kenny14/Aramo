@@ -40,7 +40,17 @@ const runtime = {
   marginMode: config.coinex.defaultMarginMode,
   autoEnabled: Boolean(config.auto.enabled),
   accountState: {
-    lossStreak: 0
+    lossStreak: 0,
+    wins: 0,
+    losses: 0,
+    closedTrades: 0,
+    dailyPnlPct: 0,
+    dailyTrades: 0,
+    dailyWins: 0,
+    dailyLosses: 0,
+    dailyResetAt: new Date().setHours(0, 0, 0, 0),
+    autoPauseUntil: 0,
+    guardrailReason: null
   }
 };
 
@@ -79,6 +89,104 @@ function cleanupExpiredDrafts() {
   }
 
   return removed;
+}
+
+
+function resetDailyAccountStateIfNeeded() {
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  if (numberOrZero(runtime.accountState.dailyResetAt) === todayStart) return;
+
+  runtime.accountState.dailyResetAt = todayStart;
+  runtime.accountState.dailyPnlPct = 0;
+  runtime.accountState.dailyTrades = 0;
+  runtime.accountState.dailyWins = 0;
+  runtime.accountState.dailyLosses = 0;
+}
+
+function updateAccountStatsOnClose(pnlPct) {
+  resetDailyAccountStateIfNeeded();
+
+  const pnl = numberOrZero(pnlPct);
+  runtime.accountState.closedTrades += 1;
+  runtime.accountState.dailyTrades += 1;
+  runtime.accountState.dailyPnlPct += pnl;
+
+  if (pnl < 0) {
+    runtime.accountState.losses += 1;
+    runtime.accountState.dailyLosses += 1;
+  } else {
+    runtime.accountState.wins += 1;
+    runtime.accountState.dailyWins += 1;
+  }
+}
+
+function maybePauseAutoByGuardrails() {
+  resetDailyAccountStateIfNeeded();
+
+  const now = Date.now();
+  if (numberOrZero(runtime.accountState.autoPauseUntil) > now) {
+    return {
+      ok: false,
+      reason: `Auto pausado hasta ${new Date(runtime.accountState.autoPauseUntil).toLocaleTimeString()}`
+    };
+  }
+
+  const maxDailyLossPct = numberOrZero(config.auto.autoMaxDailyLossPct || 2.5);
+  const maxConsecutiveLosses = numberOrZero(config.auto.autoMaxConsecutiveLosses || 4);
+  const maxTradesPerDay = numberOrZero(config.auto.autoMaxTradesPerDay || 12);
+  const minWinRateSample = numberOrZero(config.auto.autoMinWinRateSample || 12);
+  const minWinRatePct = numberOrZero(config.auto.autoMinWinRatePct || 45);
+
+  const closed = numberOrZero(runtime.accountState.closedTrades);
+  const wins = numberOrZero(runtime.accountState.wins);
+  const winRatePct = closed > 0 ? (wins / closed) * 100 : 100;
+
+  let reason = null;
+
+  if (numberOrZero(runtime.accountState.dailyPnlPct) <= -maxDailyLossPct) {
+    reason = `Guardrail: pérdida diaria límite (${runtime.accountState.dailyPnlPct.toFixed(2)}%).`;
+  } else if (numberOrZero(runtime.accountState.lossStreak) >= maxConsecutiveLosses) {
+    reason = `Guardrail: racha de pérdidas (${runtime.accountState.lossStreak}).`;
+  } else if (numberOrZero(runtime.accountState.dailyTrades) >= maxTradesPerDay) {
+    reason = `Guardrail: máximo de trades diarios (${runtime.accountState.dailyTrades}).`;
+  } else if (closed >= minWinRateSample && winRatePct < minWinRatePct) {
+    reason = `Guardrail: win rate global bajo (${winRatePct.toFixed(1)}%).`;
+  }
+
+  if (!reason) {
+    runtime.accountState.guardrailReason = null;
+    return { ok: true, reason: "OK" };
+  }
+
+  const pauseMinutes = numberOrZero(config.auto.autoPauseMinutesAfterGuardrail || 120);
+  runtime.accountState.autoPauseUntil = now + pauseMinutes * 60 * 1000;
+  runtime.accountState.guardrailReason = reason;
+
+  return { ok: false, reason };
+}
+
+function getAdaptiveAutoPercent(symbol) {
+  const basePercent = isMemeSymbol(symbol)
+    ? Math.min(config.auto.defaultPercent, 10)
+    : config.auto.defaultPercent;
+
+  const lossStreak = numberOrZero(runtime.accountState.lossStreak);
+  const closed = numberOrZero(runtime.accountState.closedTrades);
+  const wins = numberOrZero(runtime.accountState.wins);
+  const winRatePct = closed > 0 ? (wins / closed) * 100 : 100;
+
+  let factor = 1;
+  if (lossStreak >= 3) factor *= 0.45;
+  else if (lossStreak === 2) factor *= 0.6;
+  else if (lossStreak === 1) factor *= 0.8;
+
+  if (closed >= numberOrZero(config.auto.autoMinWinRateSample || 12)) {
+    if (winRatePct < 45) factor *= 0.55;
+    else if (winRatePct < 55) factor *= 0.75;
+  }
+
+  const pct = Math.max(5, Math.min(basePercent, Math.round(basePercent * factor)));
+  return pct;
 }
 
 function sleep(ms) {
@@ -155,6 +263,8 @@ function markSymbolTradeClose(symbol, pnlPct = 0) {
     state.cooldownUntil =
       Date.now() + config.risk.symbolFilters.cooldownMinutesAfterLossStreak * 60 * 1000;
   }
+
+  updateAccountStatsOnClose(pnlPct);
 }
 
 function calcRoePctFromPosition(position) {
@@ -372,6 +482,18 @@ function validateScannerFindingForAuto(item) {
     return { ok: false, reason: "Vela débil." };
   }
 
+  const regime = String(item.regime || "TRANSITION");
+  if (regime === "COMPRESSION") {
+    return { ok: false, reason: "Régimen de compresión." };
+  }
+
+  if (regime === "TRANSITION" && numberOrZero(item.score) < (minScore + 8)) {
+    return { ok: false, reason: "TRANSITION con score insuficiente." };
+  }
+
+  if (String(item.confidence || "LOW") === "MEDIUM" && numberOrZero(item.edge) < (minEdge + 2)) {
+    return { ok: false, reason: "MEDIUM confidence con edge insuficiente." };
+  }
 
   const setupType = String(item.setupType || "NONE");
   if (setupType === "NONE") {
@@ -717,15 +839,17 @@ async function executeDraftTrade(draftId, meta = {}) {
       throw new Error("La posición no se confirmó a tiempo.");
     }
 
+    const entryPrice = numberOrZero(position.avg_entry_price) || liveMarkPrice;
+
     const stopLoss =
       draft.direction === "LONG"
-        ? fixedByTick(liveMarkPrice * (1 - draft.stopLossPct / 100), marketInfo.tick_size)
-        : fixedByTick(liveMarkPrice * (1 + draft.stopLossPct / 100), marketInfo.tick_size);
+        ? fixedByTick(entryPrice * (1 - draft.stopLossPct / 100), marketInfo.tick_size)
+        : fixedByTick(entryPrice * (1 + draft.stopLossPct / 100), marketInfo.tick_size);
 
     const takeProfit =
       draft.direction === "LONG"
-        ? fixedByTick(liveMarkPrice * (1 + draft.takeProfitPct / 100), marketInfo.tick_size)
-        : fixedByTick(liveMarkPrice * (1 - draft.takeProfitPct / 100), marketInfo.tick_size);
+        ? fixedByTick(entryPrice * (1 + draft.takeProfitPct / 100), marketInfo.tick_size)
+        : fixedByTick(entryPrice * (1 - draft.takeProfitPct / 100), marketInfo.tick_size);
 
     await setPositionStopLoss({
       market,
@@ -740,7 +864,6 @@ async function executeDraftTrade(draftId, meta = {}) {
     });
 
     const tradeId = makeId("TRADE");
-    const entryPrice = numberOrZero(position.avg_entry_price) || liveMarkPrice;
 
     const tradeRecord = {
       tradeId,
@@ -952,6 +1075,12 @@ async function runAutoCloseCycle() {
 async function runAutoEntryCycle() {
   cleanupExpiredDrafts();
 
+  const guardrail = maybePauseAutoByGuardrails();
+  if (!guardrail.ok) {
+    runtime.lastAction = "auto_guardrail_pause";
+    return;
+  }
+
   const symbols = await getDynamicSymbols(false);
   const findings = await scanMarketBatch(symbols, [...activeTrades.values()]);
   const balances = await getFuturesBalances();
@@ -994,9 +1123,7 @@ async function runAutoEntryCycle() {
 
       const preview = await buildTradePreview({
         symbol: item.symbol,
-        percent: isMemeSymbol(item.symbol)
-          ? Math.min(config.auto.defaultPercent, 10)
-          : config.auto.defaultPercent,
+        percent: getAdaptiveAutoPercent(item.symbol),
         stopLossPct: config.auto.defaultStopLossPct,
         takeProfitPct: config.auto.defaultTakeProfitPct,
         signalPeriod: config.auto.defaultSignalPeriod
@@ -1040,7 +1167,9 @@ app.get("/api/health", async (_req, res) => {
     env: config.nodeEnv,
     autoEnabled: runtime.autoEnabled,
     autoEntryProbability: config.auto.autoEntryProbability,
-    autoTakeProfitRoe: config.auto.autoTakeProfitRoe
+    autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
+    guardrailReason: runtime.accountState.guardrailReason,
+    autoPauseUntil: runtime.accountState.autoPauseUntil
   });
 });
 
@@ -1157,7 +1286,9 @@ app.get("/api/auto-status", async (_req, res) => {
     ok: true,
     enabled: runtime.autoEnabled,
     autoEntryProbability: config.auto.autoEntryProbability,
-    autoTakeProfitRoe: config.auto.autoTakeProfitRoe
+    autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
+    guardrailReason: runtime.accountState.guardrailReason,
+    autoPauseUntil: runtime.accountState.autoPauseUntil
   });
 });
 
@@ -1233,7 +1364,9 @@ app.get("/api/status", async (_req, res) => {
       auto: {
         enabled: runtime.autoEnabled,
         autoEntryProbability: config.auto.autoEntryProbability,
-        autoTakeProfitRoe: config.auto.autoTakeProfitRoe
+        autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
+        guardrailReason: runtime.accountState.guardrailReason,
+        autoPauseUntil: runtime.accountState.autoPauseUntil
       }
     });
   } catch (error) {

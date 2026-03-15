@@ -189,6 +189,34 @@ function getAdaptiveAutoPercent(symbol) {
   return pct;
 }
 
+function getAdaptiveAutoRisk(item) {
+  const defaultStopLossPct = numberOrZero(config.auto.defaultStopLossPct);
+  const defaultTakeProfitPct = numberOrZero(config.auto.defaultTakeProfitPct);
+
+  const rr = defaultStopLossPct > 0
+    ? defaultTakeProfitPct / defaultStopLossPct
+    : 1;
+
+  const atrPct15 = numberOrZero(item?.rawSignal?.metrics?.atrPct15);
+  const setupType = String(item?.setupType || "NONE");
+  const atrMultiplier = setupType.startsWith("BREAKOUT") ? 1.35 : 1.1;
+
+  const volatilityFloor = atrPct15 > 0 ? atrPct15 * atrMultiplier : 0;
+  const stopLossPct = Number(
+    Math.min(Math.max(defaultStopLossPct, volatilityFloor), 3).toFixed(3)
+  );
+
+  const takeProfitPct = Number(
+    Math.max(defaultTakeProfitPct, stopLossPct * Math.max(rr, 1)).toFixed(3)
+  );
+
+  return {
+    stopLossPct,
+    takeProfitPct,
+    atrPct15: Number(atrPct15.toFixed(4))
+  };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1121,11 +1149,13 @@ async function runAutoEntryCycle() {
       );
       if (alreadyDrafted) continue;
 
+      const autoRisk = getAdaptiveAutoRisk(item);
+
       const preview = await buildTradePreview({
         symbol: item.symbol,
         percent: getAdaptiveAutoPercent(item.symbol),
-        stopLossPct: config.auto.defaultStopLossPct,
-        takeProfitPct: config.auto.defaultTakeProfitPct,
+        stopLossPct: autoRisk.stopLossPct,
+        takeProfitPct: autoRisk.takeProfitPct,
         signalPeriod: config.auto.defaultSignalPeriod
       });
 

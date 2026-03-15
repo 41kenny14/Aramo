@@ -1,0 +1,19 @@
+{
+  "name": "coinex-pro-bot",
+  "version": "2.0.0",
+  "description": "Institutional-lite directional bot for CoinEx Futures USDT",
+  "type": "module",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "scripts": {
+    "dev": "node server.js",
+    "start": "NODE_ENV=production node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}

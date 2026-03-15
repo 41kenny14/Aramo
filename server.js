@@ -252,6 +252,9 @@ function validatePreviewPayload(body, allowedSymbols) {
   if (!Number.isFinite(stopLossPct) || stopLossPct <= 0) throw new Error("Stop Loss % inválido.");
   if (!Number.isFinite(takeProfitPct) || takeProfitPct <= 0) throw new Error("Take Profit % inválido.");
 
+  const rr = takeProfitPct / stopLossPct;
+  if (rr < 1.25) throw new Error("Riesgo/beneficio insuficiente: TP/SL debe ser >= 1.25.");
+
   validateSignalPeriod(signalPeriod);
 
   return { symbol, percent, stopLossPct, takeProfitPct, signalPeriod };
@@ -340,7 +343,14 @@ function validateScannerFindingForAuto(item) {
     return { ok: false, reason: "Confidence LOW." };
   }
 
-  const { minScore, minEdge } = getRiskThresholds();
+  const minScore = Math.max(
+    getRiskThresholds().minScore,
+    numberOrZero(config.auto.autoMinScore || 45)
+  );
+  const minEdge = Math.max(
+    getRiskThresholds().minEdge,
+    numberOrZero(config.auto.autoMinEdge || 6)
+  );
 
   if (numberOrZero(item.score) < minScore) {
     return { ok: false, reason: "Score bajo." };
@@ -360,6 +370,23 @@ function validateScannerFindingForAuto(item) {
 
   if (numberOrZero(item.bodyStrength5) < 0.35) {
     return { ok: false, reason: "Vela débil." };
+  }
+
+
+  const setupType = String(item.setupType || "NONE");
+  if (setupType === "NONE") {
+    return { ok: false, reason: "Sin setup operativo." };
+  }
+
+  const bias1h = String(item.bias1h || "NEUTRAL");
+  const bias15m = String(item.bias15m || "NEUTRAL");
+
+  if (item.direction === "LONG" && (bias1h !== "BULL" || bias15m !== "BULL")) {
+    return { ok: false, reason: "MTF no alineado para LONG." };
+  }
+
+  if (item.direction === "SHORT" && (bias1h !== "BEAR" || bias15m !== "BEAR")) {
+    return { ok: false, reason: "MTF no alineado para SHORT." };
   }
 
   if (item.direction === "LONG" && numberOrZero(item.upperWick5) > 0.45) {

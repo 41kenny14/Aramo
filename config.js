@@ -84,6 +84,8 @@ const config = {
   auto: {
     enabled: envBool("AUTO_ENABLED", false),
     autoEntryProbability: envNum("AUTO_ENTRY_PROBABILITY", 58),
+    autoMinScore: envNum("AUTO_MIN_SCORE", 45),
+    autoMinEdge: envNum("AUTO_MIN_EDGE", 6),
     autoTakeProfitRoe: envNum("AUTO_TAKE_PROFIT_ROE", 10),
     autoScanIntervalMs: envNum("AUTO_SCAN_INTERVAL_MS", 5000),
     defaultPercent: envNum("AUTO_DEFAULT_PERCENT", 25),
@@ -187,6 +189,8 @@ function assertConfig() {
   assertRange("SCANNER_INTERVAL_MS", config.scanner.intervalMs, { min: 500, max: 3600000 });
 
   assertRange("AUTO_ENTRY_PROBABILITY", config.auto.autoEntryProbability, { min: 1, max: 99 });
+  assertRange("AUTO_MIN_SCORE", config.auto.autoMinScore, { min: 1, max: 100 });
+  assertRange("AUTO_MIN_EDGE", config.auto.autoMinEdge, { min: 0, max: 99 });
   assertRange("AUTO_TAKE_PROFIT_ROE", config.auto.autoTakeProfitRoe, { min: 0.1, max: 500 });
   assertRange("AUTO_SCAN_INTERVAL_MS", config.auto.autoScanIntervalMs, { min: 1000, max: 3600000 });
   assertRange("AUTO_DEFAULT_PERCENT", config.auto.defaultPercent, { min: 1, max: 100 });

@@ -694,19 +694,19 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     getMarketKline({
       market,
       period: triggerPeriod,
-      limit: 160,
+      limit: 161,
       priceType: "latest_price"
     }),
     getMarketKline({
       market,
       period: "15min",
-      limit: 160,
+      limit: 161,
       priceType: "latest_price"
     }),
     getMarketKline({
       market,
       period: "1hour",
-      limit: 160,
+      limit: 161,
       priceType: "latest_price"
     })
   ]);
@@ -717,6 +717,10 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
   const c5 = toClosedCandles(kline5, triggerPeriod);
   const c15 = toClosedCandles(kline15, "15min");
   const c1h = toClosedCandles(kline1h, "1hour");
+
+  if (c5.length < 60 || c15.length < 60 || c1h.length < 60) {
+    throw new Error(`No hay suficientes velas cerradas para analizar ${market}`);
+  }
 
   recordOiSnapshot(market, ticker.open_interest_volume, ticker.mark_price || ticker.last);
 

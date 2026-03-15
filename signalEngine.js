@@ -21,6 +21,49 @@ function last(arr) {
   return arr[arr.length - 1];
 }
 
+function periodToMs(period) {
+  const map = {
+    "1min": 60_000,
+    "3min": 180_000,
+    "5min": 300_000,
+    "15min": 900_000,
+    "30min": 1_800_000,
+    "1hour": 3_600_000,
+    "2hour": 7_200_000,
+    "4hour": 14_400_000,
+    "6hour": 21_600_000,
+    "12hour": 43_200_000,
+    "1day": 86_400_000,
+    "3day": 259_200_000,
+    "1week": 604_800_000
+  };
+
+  return map[period] || 0;
+}
+
+function normalizeTimestamp(ts) {
+  const raw = num(ts);
+  if (!raw) return 0;
+  return raw < 1e12 ? raw * 1000 : raw;
+}
+
+function toClosedCandles(candles, period) {
+  if (!Array.isArray(candles) || candles.length < 2) return candles || [];
+
+  const periodMs = periodToMs(period);
+  if (!periodMs) return candles;
+
+  const sorted = [...candles].sort((a, b) => num(a.created_at) - num(b.created_at));
+  const lastTs = normalizeTimestamp(last(sorted)?.created_at);
+  if (!lastTs) return sorted;
+
+  const isOpenCandle = Date.now() - lastTs < periodMs;
+  if (!isOpenCandle) return sorted;
+
+  // Evita usar la vela en formación: reduce flicker/invalidaciones inmediatas.
+  return sorted.slice(0, -1);
+}
+
 function calcTrueRange(curr, prevClose) {
   const high = num(curr.high);
   const low = num(curr.low);
@@ -651,19 +694,19 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     getMarketKline({
       market,
       period: triggerPeriod,
-      limit: 160,
+      limit: 161,
       priceType: "latest_price"
     }),
     getMarketKline({
       market,
       period: "15min",
-      limit: 160,
+      limit: 161,
       priceType: "latest_price"
     }),
     getMarketKline({
       market,
       period: "1hour",
-      limit: 160,
+      limit: 161,
       priceType: "latest_price"
     })
   ]);
@@ -671,9 +714,13 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
   const ticker = Array.isArray(tickerList) ? tickerList[0] : null;
   if (!ticker) throw new Error(`No se pudo obtener ticker para ${market}`);
 
-  const c5 = [...kline5].sort((a, b) => num(a.created_at) - num(b.created_at));
-  const c15 = [...kline15].sort((a, b) => num(a.created_at) - num(b.created_at));
-  const c1h = [...kline1h].sort((a, b) => num(a.created_at) - num(b.created_at));
+  const c5 = toClosedCandles(kline5, triggerPeriod);
+  const c15 = toClosedCandles(kline15, "15min");
+  const c1h = toClosedCandles(kline1h, "1hour");
+
+  if (c5.length < 60 || c15.length < 60 || c1h.length < 60) {
+    throw new Error(`No hay suficientes velas cerradas para analizar ${market}`);
+  }
 
   recordOiSnapshot(market, ticker.open_interest_volume, ticker.mark_price || ticker.last);
 
@@ -684,6 +731,9 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
   const move5 = calcMovePct(c5, 4);
   const move15 = calcMovePct(c15, 4);
   const move1h = calcMovePct(c1h, 4);
+
+  const atr15Obj = calcATR(c15, 14);
+  const atr15 = atr15Obj.currentATR;
 
   const volumeRatio = calcVolumeRatio(c5, 20);
   const atrRatio = calcAtrRatio(c15, 14, 14);
@@ -854,6 +904,8 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     metrics: {
       volumeRatio: Number(volumeRatio.toFixed(3)),
       atrRatio: Number(atrRatio.toFixed(3)),
+      atr15: Number(atr15.toFixed(8)),
+      atrPct15: Number((trend15m.close > 0 ? ((atr15 / trend15m.close) * 100) : 0).toFixed(4)),
       extension5: Number(extension5.toFixed(3)),
       distEma20_5: Number(distEma20_5.toFixed(3)),
       adx15: Number(adx15.toFixed(2)),

@@ -154,18 +154,18 @@ export function adviseTrade({ trade, signal, currentPosition }) {
     reason = "La operación sigue lenta; vigilar si no acelera pronto.";
   }
 
-  // 7) proteger antes, porque el bot busca micro-gain
-  else if (pnlPct >= 0.25 && (confidence !== "HIGH" || score < 56 || edge < 6 || oppositeWickBad)) {
-    recommendation = "PROTEGER GANANCIA";
-    severity = "PROTECT";
-    reason = "Hay ganancia abierta, pero la convicción actual bajó o apareció rechazo.";
-  }
-
-  // 8) cerrar ganancia si ya hubo recorrido útil y la ventaja cae
+  // 7) cerrar ganancia si ya hubo recorrido útil y la ventaja cae
   else if (pnlPct >= 0.45 && (isNoTrade || !aligned || edge < 5 || oppositeWickBad)) {
     recommendation = "CERRAR";
     severity = "EXIT";
     reason = "Ya hubo recorrido útil y la ventaja actual se debilitó.";
+  }
+
+  // 8) proteger antes, porque el bot busca micro-gain
+  else if (pnlPct >= 0.25 && (confidence !== "HIGH" || score < 56 || edge < 6 || oppositeWickBad)) {
+    recommendation = "PROTEGER GANANCIA";
+    severity = "PROTECT";
+    reason = "Hay ganancia abierta, pero la convicción actual bajó o apareció rechazo.";
   }
 
   // 9) si va bien pero ya muy extendido, proteger

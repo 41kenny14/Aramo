@@ -87,6 +87,30 @@ INSERT INTO trade_advice_logs (
 )
 `);
 
+
+const selectOpenTradesStmt = db.prepare(`
+SELECT
+  trade_id,
+  symbol,
+  market,
+  side,
+  direction,
+  confidence,
+  leverage,
+  percent,
+  amount,
+  entry_price,
+  stop_loss,
+  take_profit,
+  signal_period,
+  status,
+  opened_at,
+  closed_at
+FROM trade_logs
+WHERE status = 'OPEN'
+ORDER BY opened_at DESC
+`);
+
 export function logSignal(symbol, signal) {
   insertSignalStmt.run({
     symbol,
@@ -130,6 +154,28 @@ export function logTradeClose(tradeId) {
     status: "CLOSED",
     closed_at: Date.now()
   });
+}
+
+
+export function getOpenTrades() {
+  return selectOpenTradesStmt.all().map((row) => ({
+    tradeId: row.trade_id,
+    symbol: row.symbol,
+    market: row.market,
+    side: row.side,
+    direction: row.direction,
+    confidence: row.confidence,
+    leverage: row.leverage,
+    percent: row.percent,
+    amount: row.amount,
+    entryPrice: row.entry_price,
+    stopLoss: row.stop_loss,
+    takeProfit: row.take_profit,
+    signalPeriod: row.signal_period,
+    status: row.status,
+    openedAt: row.opened_at,
+    closedAt: row.closed_at
+  }));
 }
 
 export function logAdvice(tradeId, advice) {

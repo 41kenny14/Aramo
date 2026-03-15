@@ -46,11 +46,14 @@ export function isTradableSignal(signal) {
     return { ok: false, reason: "Señal marcada como NO_TRADE." };
   }
 
-  if (score < 58) {
+  const minScore = num(config.scanner?.minScore || 42);
+  const minEdge = num(config.scanner?.minEdge || 3);
+
+  if (score < minScore) {
     return { ok: false, reason: `Score insuficiente (${score}).` };
   }
 
-  if (edge < 10) {
+  if (edge < minEdge) {
     return { ok: false, reason: `Edge insuficiente (${edge.toFixed(1)}).` };
   }
 
@@ -106,7 +109,8 @@ export function canOpenNewTrade({
   symbolState,
   signal,
   availableUsdt,
-  accountState
+  accountState,
+  totalAccountUsdt
 }) {
   if (isBlockedSymbol(symbol)) {
     return { ok: false, reason: `Símbolo bloqueado: ${symbol}` };
@@ -162,7 +166,10 @@ export function canOpenNewTrade({
     .reduce((acc, t) => acc + num(t.marginUsed || t.usableMargin || 0), 0);
 
   const maxAccountExposurePct = num(config.risk.maxAccountExposurePct || 45);
-  const maxExposureUsdt = availableUsdt * (maxAccountExposurePct / 100);
+  const accountCapitalUsdt = num(totalAccountUsdt) > 0
+    ? num(totalAccountUsdt)
+    : num(availableUsdt) + totalOpenMargin;
+  const maxExposureUsdt = accountCapitalUsdt * (maxAccountExposurePct / 100);
 
   if (totalOpenMargin >= maxExposureUsdt) {
     return {
@@ -250,7 +257,8 @@ export function sizeBySignal({
   basePrecision,
   signal,
   accountState,
-  activeTrades
+  activeTrades,
+  totalAccountUsdt
 }) {
   const score = num(signal?.score || 0);
   const confidence = signal?.confidence || "LOW";
@@ -281,7 +289,11 @@ export function sizeBySignal({
     .filter((t) => t.status === "OPEN")
     .reduce((acc, t) => acc + num(t.marginUsed || t.usableMargin || 0), 0);
 
-  const exposurePct = availableUsdt > 0 ? (totalOpenMargin / availableUsdt) * 100 : 0;
+  const capitalBaseUsdt = num(totalAccountUsdt) > 0
+    ? num(totalAccountUsdt)
+    : num(availableUsdt) + totalOpenMargin;
+
+  const exposurePct = capitalBaseUsdt > 0 ? (totalOpenMargin / capitalBaseUsdt) * 100 : 0;
 
   let exposureMultiplier = 1;
   if (exposurePct >= 35) exposureMultiplier = 0.45;

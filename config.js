@@ -69,11 +69,11 @@ const config = {
     intervalMs: envNum("SCANNER_INTERVAL_MS", 5000),
     signalPeriod: envStr("SCANNER_SIGNAL_PERIOD", "5min"),
     minProbability: envNum("SCANNER_MIN_PROBABILITY", 52),
-    minScore: envNum("SCANNER_MIN_SCORE", 38),
+    minScore: envNum("SCANNER_MIN_SCORE", 42),
     minEdge: envNum("SCANNER_MIN_EDGE", 3),
     maxFindings: envNum("SCANNER_MAX_FINDINGS", 20),
     findingTtlMs: envNum("SCANNER_FINDING_TTL_MS", 90000),
-    debug: envBool("SCANNER_DEBUG", true),
+    debug: envBool("SCANNER_DEBUG", false),
     debugMaxErrors: envNum("SCANNER_DEBUG_MAX_ERRORS", 25),
     minAdx15: envNum("SCANNER_MIN_ADX15", 14),
     maxAbsDistEma20_5: envNum("SCANNER_MAX_ABS_DIST_EMA20_5", 1.1),
@@ -84,6 +84,8 @@ const config = {
   auto: {
     enabled: envBool("AUTO_ENABLED", false),
     autoEntryProbability: envNum("AUTO_ENTRY_PROBABILITY", 58),
+    autoMinScore: envNum("AUTO_MIN_SCORE", 45),
+    autoMinEdge: envNum("AUTO_MIN_EDGE", 6),
     autoTakeProfitRoe: envNum("AUTO_TAKE_PROFIT_ROE", 10),
     autoScanIntervalMs: envNum("AUTO_SCAN_INTERVAL_MS", 5000),
     defaultPercent: envNum("AUTO_DEFAULT_PERCENT", 25),
@@ -187,6 +189,8 @@ function assertConfig() {
   assertRange("SCANNER_INTERVAL_MS", config.scanner.intervalMs, { min: 500, max: 3600000 });
 
   assertRange("AUTO_ENTRY_PROBABILITY", config.auto.autoEntryProbability, { min: 1, max: 99 });
+  assertRange("AUTO_MIN_SCORE", config.auto.autoMinScore, { min: 1, max: 100 });
+  assertRange("AUTO_MIN_EDGE", config.auto.autoMinEdge, { min: 0, max: 99 });
   assertRange("AUTO_TAKE_PROFIT_ROE", config.auto.autoTakeProfitRoe, { min: 0.1, max: 500 });
   assertRange("AUTO_SCAN_INTERVAL_MS", config.auto.autoScanIntervalMs, { min: 1000, max: 3600000 });
   assertRange("AUTO_DEFAULT_PERCENT", config.auto.defaultPercent, { min: 1, max: 100 });

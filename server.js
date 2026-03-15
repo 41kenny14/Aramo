@@ -24,7 +24,7 @@ import {
   isMemeSymbol,
   getSignalEdge
 } from "./riskEngine.js";
-import { logTradeOpen, logTradeClose, logAdvice } from "./db.js";
+import { logTradeOpen, logTradeClose, logAdvice, getOpenTrades } from "./db.js";
 
 const app = express();
 
@@ -40,7 +40,17 @@ const runtime = {
   marginMode: config.coinex.defaultMarginMode,
   autoEnabled: Boolean(config.auto.enabled),
   accountState: {
-    lossStreak: 0
+    lossStreak: 0,
+    wins: 0,
+    losses: 0,
+    closedTrades: 0,
+    dailyPnlPct: 0,
+    dailyTrades: 0,
+    dailyWins: 0,
+    dailyLosses: 0,
+    dailyResetAt: new Date().setHours(0, 0, 0, 0),
+    autoPauseUntil: 0,
+    guardrailReason: null
   }
 };
 
@@ -58,6 +68,126 @@ const symbolState = new Map();
 const symbolLocks = new Map();
 
 const MAX_DRAFT_AGE_MS = 60 * 1000;
+
+function getRiskThresholds() {
+  return {
+    minScore: numberOrZero(config.scanner?.minScore || 42),
+    minEdge: numberOrZero(config.scanner?.minEdge || 3)
+  };
+}
+
+function cleanupExpiredDrafts() {
+  const now = Date.now();
+  let removed = 0;
+
+  for (const [draftId, preview] of draftTrades.entries()) {
+    const createdAt = numberOrZero(preview?.trade?.createdAt);
+    if (createdAt > 0 && now - createdAt > MAX_DRAFT_AGE_MS) {
+      draftTrades.delete(draftId);
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
+
+function resetDailyAccountStateIfNeeded() {
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  if (numberOrZero(runtime.accountState.dailyResetAt) === todayStart) return;
+
+  runtime.accountState.dailyResetAt = todayStart;
+  runtime.accountState.dailyPnlPct = 0;
+  runtime.accountState.dailyTrades = 0;
+  runtime.accountState.dailyWins = 0;
+  runtime.accountState.dailyLosses = 0;
+}
+
+function updateAccountStatsOnClose(pnlPct) {
+  resetDailyAccountStateIfNeeded();
+
+  const pnl = numberOrZero(pnlPct);
+  runtime.accountState.closedTrades += 1;
+  runtime.accountState.dailyTrades += 1;
+  runtime.accountState.dailyPnlPct += pnl;
+
+  if (pnl < 0) {
+    runtime.accountState.losses += 1;
+    runtime.accountState.dailyLosses += 1;
+  } else {
+    runtime.accountState.wins += 1;
+    runtime.accountState.dailyWins += 1;
+  }
+}
+
+function maybePauseAutoByGuardrails() {
+  resetDailyAccountStateIfNeeded();
+
+  const now = Date.now();
+  if (numberOrZero(runtime.accountState.autoPauseUntil) > now) {
+    return {
+      ok: false,
+      reason: `Auto pausado hasta ${new Date(runtime.accountState.autoPauseUntil).toLocaleTimeString()}`
+    };
+  }
+
+  const maxDailyLossPct = numberOrZero(config.auto.autoMaxDailyLossPct || 2.5);
+  const maxConsecutiveLosses = numberOrZero(config.auto.autoMaxConsecutiveLosses || 4);
+  const maxTradesPerDay = numberOrZero(config.auto.autoMaxTradesPerDay || 12);
+  const minWinRateSample = numberOrZero(config.auto.autoMinWinRateSample || 12);
+  const minWinRatePct = numberOrZero(config.auto.autoMinWinRatePct || 45);
+
+  const closed = numberOrZero(runtime.accountState.closedTrades);
+  const wins = numberOrZero(runtime.accountState.wins);
+  const winRatePct = closed > 0 ? (wins / closed) * 100 : 100;
+
+  let reason = null;
+
+  if (numberOrZero(runtime.accountState.dailyPnlPct) <= -maxDailyLossPct) {
+    reason = `Guardrail: pérdida diaria límite (${runtime.accountState.dailyPnlPct.toFixed(2)}%).`;
+  } else if (numberOrZero(runtime.accountState.lossStreak) >= maxConsecutiveLosses) {
+    reason = `Guardrail: racha de pérdidas (${runtime.accountState.lossStreak}).`;
+  } else if (numberOrZero(runtime.accountState.dailyTrades) >= maxTradesPerDay) {
+    reason = `Guardrail: máximo de trades diarios (${runtime.accountState.dailyTrades}).`;
+  } else if (closed >= minWinRateSample && winRatePct < minWinRatePct) {
+    reason = `Guardrail: win rate global bajo (${winRatePct.toFixed(1)}%).`;
+  }
+
+  if (!reason) {
+    runtime.accountState.guardrailReason = null;
+    return { ok: true, reason: "OK" };
+  }
+
+  const pauseMinutes = numberOrZero(config.auto.autoPauseMinutesAfterGuardrail || 120);
+  runtime.accountState.autoPauseUntil = now + pauseMinutes * 60 * 1000;
+  runtime.accountState.guardrailReason = reason;
+
+  return { ok: false, reason };
+}
+
+function getAdaptiveAutoPercent(symbol) {
+  const basePercent = isMemeSymbol(symbol)
+    ? Math.min(config.auto.defaultPercent, 10)
+    : config.auto.defaultPercent;
+
+  const lossStreak = numberOrZero(runtime.accountState.lossStreak);
+  const closed = numberOrZero(runtime.accountState.closedTrades);
+  const wins = numberOrZero(runtime.accountState.wins);
+  const winRatePct = closed > 0 ? (wins / closed) * 100 : 100;
+
+  let factor = 1;
+  if (lossStreak >= 3) factor *= 0.45;
+  else if (lossStreak === 2) factor *= 0.6;
+  else if (lossStreak === 1) factor *= 0.8;
+
+  if (closed >= numberOrZero(config.auto.autoMinWinRateSample || 12)) {
+    if (winRatePct < 45) factor *= 0.55;
+    else if (winRatePct < 55) factor *= 0.75;
+  }
+
+  const pct = Math.max(5, Math.min(basePercent, Math.round(basePercent * factor)));
+  return pct;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -133,6 +263,8 @@ function markSymbolTradeClose(symbol, pnlPct = 0) {
     state.cooldownUntil =
       Date.now() + config.risk.symbolFilters.cooldownMinutesAfterLossStreak * 60 * 1000;
   }
+
+  updateAccountStatsOnClose(pnlPct);
 }
 
 function calcRoePctFromPosition(position) {
@@ -230,6 +362,9 @@ function validatePreviewPayload(body, allowedSymbols) {
   if (!Number.isFinite(stopLossPct) || stopLossPct <= 0) throw new Error("Stop Loss % inválido.");
   if (!Number.isFinite(takeProfitPct) || takeProfitPct <= 0) throw new Error("Take Profit % inválido.");
 
+  const rr = takeProfitPct / stopLossPct;
+  if (rr < 1.25) throw new Error("Riesgo/beneficio insuficiente: TP/SL debe ser >= 1.25.");
+
   validateSignalPeriod(signalPeriod);
 
   return { symbol, percent, stopLossPct, takeProfitPct, signalPeriod };
@@ -243,11 +378,13 @@ function validateSignalForEntry(signal) {
 
   const edge = getSignalEdge(signal);
 
-  if (numberOrZero(signal.score) < 42) {
+  const { minScore, minEdge } = getRiskThresholds();
+
+  if (numberOrZero(signal.score) < minScore) {
     throw new Error(`Setup descartado: score bajo (${signal.score}).`);
   }
 
-  if (edge < 3) {
+  if (edge < minEdge) {
     throw new Error(`Setup descartado: ventaja direccional insuficiente (${edge.toFixed(1)}).`);
   }
 
@@ -316,11 +453,20 @@ function validateScannerFindingForAuto(item) {
     return { ok: false, reason: "Confidence LOW." };
   }
 
-  if (numberOrZero(item.score) < 42) {
+  const minScore = Math.max(
+    getRiskThresholds().minScore,
+    numberOrZero(config.auto.autoMinScore || 45)
+  );
+  const minEdge = Math.max(
+    getRiskThresholds().minEdge,
+    numberOrZero(config.auto.autoMinEdge || 6)
+  );
+
+  if (numberOrZero(item.score) < minScore) {
     return { ok: false, reason: "Score bajo." };
   }
 
-  if (numberOrZero(item.edge) < 3) {
+  if (numberOrZero(item.edge) < minEdge) {
     return { ok: false, reason: "Edge bajo." };
   }
 
@@ -334,6 +480,35 @@ function validateScannerFindingForAuto(item) {
 
   if (numberOrZero(item.bodyStrength5) < 0.35) {
     return { ok: false, reason: "Vela débil." };
+  }
+
+  const regime = String(item.regime || "TRANSITION");
+  if (regime === "COMPRESSION") {
+    return { ok: false, reason: "Régimen de compresión." };
+  }
+
+  if (regime === "TRANSITION" && numberOrZero(item.score) < (minScore + 8)) {
+    return { ok: false, reason: "TRANSITION con score insuficiente." };
+  }
+
+  if (String(item.confidence || "LOW") === "MEDIUM" && numberOrZero(item.edge) < (minEdge + 2)) {
+    return { ok: false, reason: "MEDIUM confidence con edge insuficiente." };
+  }
+
+  const setupType = String(item.setupType || "NONE");
+  if (setupType === "NONE") {
+    return { ok: false, reason: "Sin setup operativo." };
+  }
+
+  const bias1h = String(item.bias1h || "NEUTRAL");
+  const bias15m = String(item.bias15m || "NEUTRAL");
+
+  if (item.direction === "LONG" && (bias1h !== "BULL" || bias15m !== "BULL")) {
+    return { ok: false, reason: "MTF no alineado para LONG." };
+  }
+
+  if (item.direction === "SHORT" && (bias1h !== "BEAR" || bias15m !== "BEAR")) {
+    return { ok: false, reason: "MTF no alineado para SHORT." };
   }
 
   if (item.direction === "LONG" && numberOrZero(item.upperWick5) > 0.45) {
@@ -402,6 +577,8 @@ async function waitForPosition({ market, retries = 12, delayMs = 500 }) {
 }
 
 async function buildTradePreview(params) {
+  cleanupExpiredDrafts();
+
   const { symbol, percent, stopLossPct, takeProfitPct, signalPeriod } = params;
   const market = buildMarket(symbol);
 
@@ -419,7 +596,10 @@ async function buildTradePreview(params) {
     symbolState,
     signal,
     availableUsdt: numberOrZero(balances?.USDT?.available),
-    accountState: runtime.accountState
+    accountState: runtime.accountState,
+    totalAccountUsdt: numberOrZero(balances?.USDT?.available) + active
+      .filter((t) => t.status === "OPEN")
+      .reduce((acc, t) => acc + numberOrZero(t.marginUsed || t.usableMargin || 0), 0)
   });
   if (!gate.ok) throw new Error(gate.reason);
 
@@ -458,7 +638,10 @@ async function buildTradePreview(params) {
     basePrecision,
     signal,
     accountState: runtime.accountState,
-    activeTrades: active
+    activeTrades: active,
+    totalAccountUsdt: usdtAvailable + active
+      .filter((t) => t.status === "OPEN")
+      .reduce((acc, t) => acc + numberOrZero(t.marginUsed || t.usableMargin || 0), 0)
   });
 
   if (sizing.blocked || numberOrZero(sizing.amount) <= 0) {
@@ -558,6 +741,8 @@ async function executeDraftTrade(draftId, meta = {}) {
   runtime.lastError = null;
   runtime.lastAction = "execute_trade";
 
+  let orderPlaced = false;
+
   try {
     const [marketInfo, balances, freshSignal, tickerList] = await Promise.all([
       getMarketStatus(market),
@@ -615,7 +800,10 @@ async function executeDraftTrade(draftId, meta = {}) {
       basePrecision,
       signal: freshSignal,
       accountState: runtime.accountState,
-      activeTrades: [...activeTrades.values()]
+      activeTrades: [...activeTrades.values()],
+      totalAccountUsdt: usdtAvailable + [...activeTrades.values()]
+        .filter((t) => t.status === "OPEN")
+        .reduce((acc, t) => acc + numberOrZero(t.marginUsed || t.usableMargin || 0), 0)
     });
 
     if (freshSizing.blocked || numberOrZero(freshSizing.amount) <= 0) {
@@ -644,20 +832,24 @@ async function executeDraftTrade(draftId, meta = {}) {
       clientId: makeId(draft.direction)
     });
 
+    orderPlaced = true;
+
     const position = await waitForPosition({ market });
     if (!position) {
       throw new Error("La posición no se confirmó a tiempo.");
     }
 
+    const entryPrice = numberOrZero(position.avg_entry_price) || liveMarkPrice;
+
     const stopLoss =
       draft.direction === "LONG"
-        ? fixedByTick(liveMarkPrice * (1 - draft.stopLossPct / 100), marketInfo.tick_size)
-        : fixedByTick(liveMarkPrice * (1 + draft.stopLossPct / 100), marketInfo.tick_size);
+        ? fixedByTick(entryPrice * (1 - draft.stopLossPct / 100), marketInfo.tick_size)
+        : fixedByTick(entryPrice * (1 + draft.stopLossPct / 100), marketInfo.tick_size);
 
     const takeProfit =
       draft.direction === "LONG"
-        ? fixedByTick(liveMarkPrice * (1 + draft.takeProfitPct / 100), marketInfo.tick_size)
-        : fixedByTick(liveMarkPrice * (1 - draft.takeProfitPct / 100), marketInfo.tick_size);
+        ? fixedByTick(entryPrice * (1 + draft.takeProfitPct / 100), marketInfo.tick_size)
+        : fixedByTick(entryPrice * (1 - draft.takeProfitPct / 100), marketInfo.tick_size);
 
     await setPositionStopLoss({
       market,
@@ -672,7 +864,6 @@ async function executeDraftTrade(draftId, meta = {}) {
     });
 
     const tradeId = makeId("TRADE");
-    const entryPrice = numberOrZero(position.avg_entry_price) || liveMarkPrice;
 
     const tradeRecord = {
       tradeId,
@@ -742,6 +933,17 @@ async function executeDraftTrade(draftId, meta = {}) {
       position
     };
   } catch (error) {
+    if (orderPlaced) {
+      try {
+        await closePosition({
+          market,
+          clientId: makeId("ROLLBACK_CLOSE")
+        });
+      } catch (rollbackError) {
+        console.error("Rollback close error:", draft.symbol, rollbackError.message);
+      }
+    }
+
     runtime.status = "error";
     runtime.lastError = error.message;
     runtime.lastAction = "trade_open_failed";
@@ -764,10 +966,12 @@ async function closeTradeById(tradeId, reason = "AUTO_CLOSE") {
     const currentPosition = await findOpenPositionByMarket(trade.market);
     const pnlPct = currentPosition ? calcEstimatedPnlPct(trade, currentPosition) : 0;
 
-    await closePosition({
-      market: trade.market,
-      clientId: makeId("AUTO_CLOSE")
-    });
+    if (currentPosition) {
+      await closePosition({
+        market: trade.market,
+        clientId: makeId("AUTO_CLOSE")
+      });
+    }
 
     trade.closeReason = reason;
     trade.closedAt = Date.now();
@@ -869,8 +1073,18 @@ async function runAutoCloseCycle() {
 }
 
 async function runAutoEntryCycle() {
+  cleanupExpiredDrafts();
+
+  const guardrail = maybePauseAutoByGuardrails();
+  if (!guardrail.ok) {
+    runtime.lastAction = "auto_guardrail_pause";
+    return;
+  }
+
   const symbols = await getDynamicSymbols(false);
   const findings = await scanMarketBatch(symbols, [...activeTrades.values()]);
+  const balances = await getFuturesBalances();
+  const availableUsdt = numberOrZero(balances?.USDT?.available);
 
   for (const item of findings) {
     try {
@@ -893,8 +1107,11 @@ async function runAutoEntryCycle() {
             shortProb: Number(item.shortProb || 0)
           }
         },
-        availableUsdt: 999999,
-        accountState: runtime.accountState
+        availableUsdt,
+        accountState: runtime.accountState,
+        totalAccountUsdt: availableUsdt + active
+          .filter((t) => t.status === "OPEN")
+          .reduce((acc, t) => acc + numberOrZero(t.marginUsed || t.usableMargin || 0), 0)
       });
 
       if (!gate.ok) continue;
@@ -906,9 +1123,7 @@ async function runAutoEntryCycle() {
 
       const preview = await buildTradePreview({
         symbol: item.symbol,
-        percent: isMemeSymbol(item.symbol)
-          ? Math.min(config.auto.defaultPercent, 10)
-          : config.auto.defaultPercent,
+        percent: getAdaptiveAutoPercent(item.symbol),
         stopLossPct: config.auto.defaultStopLossPct,
         takeProfitPct: config.auto.defaultTakeProfitPct,
         signalPeriod: config.auto.defaultSignalPeriod
@@ -952,7 +1167,9 @@ app.get("/api/health", async (_req, res) => {
     env: config.nodeEnv,
     autoEnabled: runtime.autoEnabled,
     autoEntryProbability: config.auto.autoEntryProbability,
-    autoTakeProfitRoe: config.auto.autoTakeProfitRoe
+    autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
+    guardrailReason: runtime.accountState.guardrailReason,
+    autoPauseUntil: runtime.accountState.autoPauseUntil
   });
 });
 
@@ -1069,7 +1286,9 @@ app.get("/api/auto-status", async (_req, res) => {
     ok: true,
     enabled: runtime.autoEnabled,
     autoEntryProbability: config.auto.autoEntryProbability,
-    autoTakeProfitRoe: config.auto.autoTakeProfitRoe
+    autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
+    guardrailReason: runtime.accountState.guardrailReason,
+    autoPauseUntil: runtime.accountState.autoPauseUntil
   });
 });
 
@@ -1130,6 +1349,8 @@ app.get("/api/scan-opportunities", async (_req, res) => {
 
 app.get("/api/status", async (_req, res) => {
   try {
+    cleanupExpiredDrafts();
+
     const drafts = [...draftTrades.values()];
     const tracked = [...activeTrades.values()];
     const scanner = getScannerState();
@@ -1143,7 +1364,9 @@ app.get("/api/status", async (_req, res) => {
       auto: {
         enabled: runtime.autoEnabled,
         autoEntryProbability: config.auto.autoEntryProbability,
-        autoTakeProfitRoe: config.auto.autoTakeProfitRoe
+        autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
+        guardrailReason: runtime.accountState.guardrailReason,
+        autoPauseUntil: runtime.accountState.autoPauseUntil
       }
     });
   } catch (error) {
@@ -1171,6 +1394,36 @@ app.post("/api/close-trade/:tradeId", async (req, res) => {
   }
 });
 
+function hydrateStateFromDb() {
+  const openTrades = getOpenTrades();
+
+  for (const trade of openTrades) {
+    activeTrades.set(trade.tradeId, {
+      ...trade,
+      requestedPercent: trade.percent,
+      usableMargin: null,
+      notional: null,
+      score: 0,
+      edge: 0,
+      regime: "UNKNOWN",
+      probabilities: null,
+      setupType: "NONE",
+      adx15: 0,
+      distEma20_5: 0,
+      bodyStrength5: 0,
+      upperWick5: 0,
+      lowerWick5: 0,
+      autoOpened: false,
+      autoOpenedAt: null,
+      autoCloseTargetRoe: null,
+      closeReason: null
+    });
+
+    markSymbolTradeOpen(trade.symbol);
+  }
+}
+
+hydrateStateFromDb();
 startAutoLoop();
 
 app.listen(config.port, () => {

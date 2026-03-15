@@ -69,11 +69,11 @@ const config = {
     intervalMs: envNum("SCANNER_INTERVAL_MS", 5000),
     signalPeriod: envStr("SCANNER_SIGNAL_PERIOD", "5min"),
     minProbability: envNum("SCANNER_MIN_PROBABILITY", 52),
-    minScore: envNum("SCANNER_MIN_SCORE", 38),
+    minScore: envNum("SCANNER_MIN_SCORE", 42),
     minEdge: envNum("SCANNER_MIN_EDGE", 3),
     maxFindings: envNum("SCANNER_MAX_FINDINGS", 20),
     findingTtlMs: envNum("SCANNER_FINDING_TTL_MS", 90000),
-    debug: envBool("SCANNER_DEBUG", true),
+    debug: envBool("SCANNER_DEBUG", false),
     debugMaxErrors: envNum("SCANNER_DEBUG_MAX_ERRORS", 25),
     minAdx15: envNum("SCANNER_MIN_ADX15", 14),
     maxAbsDistEma20_5: envNum("SCANNER_MAX_ABS_DIST_EMA20_5", 1.1),
@@ -84,7 +84,15 @@ const config = {
   auto: {
     enabled: envBool("AUTO_ENABLED", false),
     autoEntryProbability: envNum("AUTO_ENTRY_PROBABILITY", 58),
+    autoMinScore: envNum("AUTO_MIN_SCORE", 45),
+    autoMinEdge: envNum("AUTO_MIN_EDGE", 6),
     autoTakeProfitRoe: envNum("AUTO_TAKE_PROFIT_ROE", 10),
+    autoMaxDailyLossPct: envNum("AUTO_MAX_DAILY_LOSS_PCT", 2.5),
+    autoMaxConsecutiveLosses: envNum("AUTO_MAX_CONSECUTIVE_LOSSES", 4),
+    autoMaxTradesPerDay: envNum("AUTO_MAX_TRADES_PER_DAY", 12),
+    autoMinWinRateSample: envNum("AUTO_MIN_WINRATE_SAMPLE", 12),
+    autoMinWinRatePct: envNum("AUTO_MIN_WINRATE_PCT", 45),
+    autoPauseMinutesAfterGuardrail: envNum("AUTO_PAUSE_MINUTES_AFTER_GUARDRAIL", 120),
     autoScanIntervalMs: envNum("AUTO_SCAN_INTERVAL_MS", 5000),
     defaultPercent: envNum("AUTO_DEFAULT_PERCENT", 25),
     defaultStopLossPct: envNum("AUTO_DEFAULT_STOP_LOSS_PCT", 0.5),
@@ -187,7 +195,15 @@ function assertConfig() {
   assertRange("SCANNER_INTERVAL_MS", config.scanner.intervalMs, { min: 500, max: 3600000 });
 
   assertRange("AUTO_ENTRY_PROBABILITY", config.auto.autoEntryProbability, { min: 1, max: 99 });
+  assertRange("AUTO_MIN_SCORE", config.auto.autoMinScore, { min: 1, max: 100 });
+  assertRange("AUTO_MIN_EDGE", config.auto.autoMinEdge, { min: 0, max: 99 });
   assertRange("AUTO_TAKE_PROFIT_ROE", config.auto.autoTakeProfitRoe, { min: 0.1, max: 500 });
+  assertRange("AUTO_MAX_DAILY_LOSS_PCT", config.auto.autoMaxDailyLossPct, { min: 0.1, max: 100 });
+  assertRange("AUTO_MAX_CONSECUTIVE_LOSSES", config.auto.autoMaxConsecutiveLosses, { min: 1, max: 50 });
+  assertRange("AUTO_MAX_TRADES_PER_DAY", config.auto.autoMaxTradesPerDay, { min: 1, max: 200 });
+  assertRange("AUTO_MIN_WINRATE_SAMPLE", config.auto.autoMinWinRateSample, { min: 1, max: 1000 });
+  assertRange("AUTO_MIN_WINRATE_PCT", config.auto.autoMinWinRatePct, { min: 1, max: 99 });
+  assertRange("AUTO_PAUSE_MINUTES_AFTER_GUARDRAIL", config.auto.autoPauseMinutesAfterGuardrail, { min: 1, max: 10080 });
   assertRange("AUTO_SCAN_INTERVAL_MS", config.auto.autoScanIntervalMs, { min: 1000, max: 3600000 });
   assertRange("AUTO_DEFAULT_PERCENT", config.auto.defaultPercent, { min: 1, max: 100 });
   assertRange("AUTO_DEFAULT_STOP_LOSS_PCT", config.auto.defaultStopLossPct, { min: 0.01, max: 50 });

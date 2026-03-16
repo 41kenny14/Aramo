@@ -11,6 +11,16 @@ const loading = {
   autoHistory: false
 };
 
+const queuedReload = {
+  health: false,
+  balances: false,
+  signal: false,
+  scanner: false,
+  status: false,
+  autoStatus: false,
+  autoHistory: false
+};
+
 function qs(id) {
   return document.getElementById(id);
 }
@@ -70,12 +80,20 @@ async function api(url, options = {}) {
 }
 
 async function guardedLoad(key, fn) {
-  if (loading[key]) return;
+  if (loading[key]) {
+    queuedReload[key] = true;
+    return;
+  }
+
   loading[key] = true;
   try {
-    await fn();
+    do {
+      queuedReload[key] = false;
+      await fn();
+    } while (queuedReload[key]);
   } finally {
     loading[key] = false;
+    queuedReload[key] = false;
   }
 }
 

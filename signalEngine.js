@@ -1045,10 +1045,6 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       distEma20_5,
       candleConfirm,
       regime: initialRegime,
-    marketState: marketState.state,
-    marketStateConfidence: marketState.confidence,
-    edgeScore: quant.edgeScore,
-    estimatedSuccessProb: quant.estimatedSuccessProb,
       marketState,
       edgeScore: quant.edgeScore,
       estimatedSuccessProb: quant.estimatedSuccessProb

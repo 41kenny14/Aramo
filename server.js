@@ -57,7 +57,8 @@ const runtime = {
     dayTradeTimestamps: [],
     sniperMode: Boolean(config.strategy?.sniperMode),
     gridMode: Boolean(config.strategy?.gridModeEnabled),
-    optimizer: { version: 1, lastRunAt: 0, lastSummary: null }
+    optimizer: { version: 1, lastRunAt: 0, lastSummary: null },
+    autoExecutionMode: "SNIPER"
   }
 };
 
@@ -522,14 +523,38 @@ function validateSignalForEntry(signal) {
   };
 }
 
-function validateScannerFindingForAuto(item) {
+function resolveAutoExecutionMode(item) {
+  const signal = item?.rawSignal || {};
+  const marketState = String(signal?.marketState || item?.marketState || "AMBIGUOUS");
+  const atrRatio = numberOrZero(signal?.metrics?.atrRatio || item?.atrRatio || 0);
+  const squeeze = Boolean(signal?.metrics?.squeeze);
+
+  if (
+    runtime.accountState.gridMode &&
+    marketState === "LATERAL_RANGE" &&
+    atrRatio > 0.8 &&
+    atrRatio < 1.25 &&
+    !squeeze
+  ) {
+    return "GRID";
+  }
+
+  if (runtime.accountState.sniperMode) return "SNIPER";
+  return "STANDARD";
+}
+
+function validateScannerFindingForAuto(item, mode = "STANDARD") {
   if (!item) return { ok: false, reason: "Finding vacía." };
 
   if (!item.direction || item.direction === "NO_TRADE") {
     return { ok: false, reason: "NO_TRADE" };
   }
 
-  if (numberOrZero(item.probability) < numberOrZero(config.auto.autoEntryProbability || 58)) {
+  const minProb = mode === "SNIPER"
+    ? Math.max(numberOrZero(config.auto.autoEntryProbability || 58), 60)
+    : numberOrZero(config.auto.autoEntryProbability || 58);
+
+  if (numberOrZero(item.probability) < minProb) {
     return { ok: false, reason: "Probabilidad insuficiente." };
   }
 
@@ -539,11 +564,13 @@ function validateScannerFindingForAuto(item) {
 
   const minScore = Math.max(
     getRiskThresholds().minScore,
-    numberOrZero(config.auto.autoMinScore || 45)
+    numberOrZero(config.auto.autoMinScore || 45),
+    mode === "SNIPER" ? 58 : 45
   );
   const minEdge = Math.max(
     getRiskThresholds().minEdge,
-    numberOrZero(config.auto.autoMinEdge || 6)
+    numberOrZero(config.auto.autoMinEdge || 6),
+    mode === "SNIPER" ? 10 : 6
   );
 
   if (numberOrZero(item.score) < minScore) {
@@ -651,11 +678,14 @@ async function findOpenPositionByMarket(market) {
   return (list || []).find((p) => p.market === market && hasOpenPosition(p)) || null;
 }
 
-async function waitForPosition({ market, retries = 12, delayMs = 500 }) {
-  for (let i = 0; i < retries; i += 1) {
+async function waitForPosition({ market, retries = 12, delayMs = 500, attempts, intervalMs }) {
+  const finalRetries = numberOrZero(attempts) > 0 ? Math.floor(numberOrZero(attempts)) : retries;
+  const finalDelayMs = numberOrZero(intervalMs) > 0 ? numberOrZero(intervalMs) : delayMs;
+
+  for (let i = 0; i < finalRetries; i += 1) {
     const position = await findOpenPositionByMarket(market);
     if (position) return position;
-    await sleep(delayMs);
+    await sleep(finalDelayMs);
   }
   return null;
 }
@@ -1195,7 +1225,15 @@ async function runAutoEntryCycle() {
     try {
       if (isBlockedSymbol(item.symbol)) continue;
 
-      const findingCheck = validateScannerFindingForAuto(item);
+      const mode = resolveAutoExecutionMode(item);
+      runtime.accountState.autoExecutionMode = mode;
+
+      if (mode === "GRID") {
+        runtime.lastAction = `auto_grid_watch_${item.symbol}`;
+        continue;
+      }
+
+      const findingCheck = validateScannerFindingForAuto(item, mode);
       if (!findingCheck.ok) continue;
 
       const active = [...activeTrades.values()];
@@ -1276,7 +1314,8 @@ app.get("/api/health", async (_req, res) => {
     autoEntryProbability: config.auto.autoEntryProbability,
     autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
     guardrailReason: runtime.accountState.guardrailReason,
-    autoPauseUntil: runtime.accountState.autoPauseUntil
+    autoPauseUntil: runtime.accountState.autoPauseUntil,
+    autoExecutionMode: runtime.accountState.autoExecutionMode
   });
 });
 
@@ -1395,7 +1434,8 @@ app.get("/api/auto-status", async (_req, res) => {
     autoEntryProbability: config.auto.autoEntryProbability,
     autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
     guardrailReason: runtime.accountState.guardrailReason,
-    autoPauseUntil: runtime.accountState.autoPauseUntil
+    autoPauseUntil: runtime.accountState.autoPauseUntil,
+    autoExecutionMode: runtime.accountState.autoExecutionMode
   });
 });
 
@@ -1473,7 +1513,9 @@ app.get("/api/status", async (_req, res) => {
         autoEntryProbability: config.auto.autoEntryProbability,
         autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
         guardrailReason: runtime.accountState.guardrailReason,
-        autoPauseUntil: runtime.accountState.autoPauseUntil
+        autoPauseUntil: runtime.accountState.autoPauseUntil,
+        autoExecutionMode: runtime.accountState.autoExecutionMode,
+    autoExecutionMode: runtime.accountState.autoExecutionMode
       }
     });
   } catch (error) {

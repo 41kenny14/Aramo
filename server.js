@@ -11,7 +11,8 @@ import {
   placeFuturesOrder,
   closePosition,
   setPositionStopLoss,
-  setPositionTakeProfit
+  setPositionTakeProfit,
+  cancelAllPendingOrders
 } from "./coinex.js";
 import { getSignalForSymbol } from "./signalEngine.js";
 import { adviseTrade } from "./tradeAdvisor.js";
@@ -50,7 +51,14 @@ const runtime = {
     dailyLosses: 0,
     dailyResetAt: new Date().setHours(0, 0, 0, 0),
     autoPauseUntil: 0,
-    guardrailReason: null
+    guardrailReason: null,
+    lastTradeAt: 0,
+    hourTradeTimestamps: [],
+    dayTradeTimestamps: [],
+    sniperMode: Boolean(config.strategy?.sniperMode),
+    gridMode: Boolean(config.strategy?.gridModeEnabled),
+    optimizer: { version: 1, lastRunAt: 0, lastSummary: null },
+    autoExecutionMode: "SNIPER"
   }
 };
 
@@ -66,6 +74,7 @@ const autoOpenedTrades = [];
 const autoClosedTrades = [];
 const symbolState = new Map();
 const symbolLocks = new Map();
+const gridStates = new Map();
 
 const MAX_DRAFT_AGE_MS = 60 * 1000;
 
@@ -91,6 +100,196 @@ function cleanupExpiredDrafts() {
   return removed;
 }
 
+
+function canPassAntiOvertradingGuards() {
+  const now = Date.now();
+  const minGapMin = numberOrZero(config.strategy?.minMinutesBetweenTrades || 10);
+  if (runtime.accountState.lastTradeAt > 0 && now - runtime.accountState.lastTradeAt < minGapMin * 60_000) {
+    return { ok: false, reason: `Cooldown activo: esperar ${minGapMin} min entre trades.` };
+  }
+
+  runtime.accountState.hourTradeTimestamps = runtime.accountState.hourTradeTimestamps.filter((ts) => now - ts < 3_600_000);
+  runtime.accountState.dayTradeTimestamps = runtime.accountState.dayTradeTimestamps.filter((ts) => now - ts < 86_400_000);
+
+  if (runtime.accountState.hourTradeTimestamps.length >= numberOrZero(config.strategy?.maxTradesPerHour || 3)) {
+    return { ok: false, reason: "Límite de trades por hora alcanzado." };
+  }
+
+  if (runtime.accountState.dayTradeTimestamps.length >= numberOrZero(config.strategy?.maxTradesPerDay || 12)) {
+    return { ok: false, reason: "Límite global de trades por día alcanzado." };
+  }
+
+  if (numberOrZero(runtime.accountState.dailyPnlPct) <= -numberOrZero(config.strategy?.maxDailyDrawdownPct || 3)) {
+    return { ok: false, reason: "Drawdown diario máximo alcanzado." };
+  }
+
+  if (numberOrZero(runtime.accountState.lossStreak) >= numberOrZero(config.strategy?.maxConsecutiveLossesPause || 3)) {
+    runtime.accountState.autoPauseUntil = now + numberOrZero(config.strategy?.pauseMinutesAfterLossStreak || 90) * 60_000;
+    return { ok: false, reason: "Pausa por racha negativa." };
+  }
+
+  return { ok: true, reason: "OK" };
+}
+
+function buildGridPlan({ signal, markPrice, marketInfo }) {
+  const gridLevels = Math.max(2, Math.floor(numberOrZero(config.strategy?.gridLevels || 6)));
+  const levelsEachSide = Math.max(1, Math.floor(gridLevels / 2));
+  const atrPct15 = numberOrZero(signal?.metrics?.atrPct15 || 0.2);
+  const stepPct = Math.max(
+    numberOrZero(config.strategy?.gridStepPct || 0.25),
+    atrPct15 * numberOrZero(config.strategy?.gridStepAtrMultiplier || 0.8)
+  );
+
+  const liqTop = numberOrZero(signal?.metrics?.liquidityBuySide);
+  const liqBottom = numberOrZero(signal?.metrics?.liquiditySellSide);
+
+  const fallbackTop = markPrice * (1 + ((stepPct * (levelsEachSide + 1)) / 100));
+  const fallbackBottom = markPrice * (1 - ((stepPct * (levelsEachSide + 1)) / 100));
+
+  const upperBound = liqTop > markPrice ? liqTop : fallbackTop;
+  const lowerBound = liqBottom > 0 && liqBottom < markPrice ? liqBottom : fallbackBottom;
+
+  const tick = numberOrZero(marketInfo?.tick_size || 0.0001);
+  const buyLevels = [];
+  const sellLevels = [];
+
+  for (let i = 1; i <= levelsEachSide; i += 1) {
+    buyLevels.push(fixedByTick(markPrice * (1 - ((stepPct * i) / 100)), tick));
+    sellLevels.push(fixedByTick(markPrice * (1 + ((stepPct * i) / 100)), tick));
+  }
+
+  return {
+    gridLevels,
+    levelsEachSide,
+    stepPct: Number(stepPct.toFixed(4)),
+    atrPct15: Number(atrPct15.toFixed(4)),
+    upperBound: Number(upperBound.toFixed(8)),
+    lowerBound: Number(lowerBound.toFixed(8)),
+    buyLevels,
+    sellLevels
+  };
+}
+
+async function runGridExecutionForSymbol(item, availableUsdt) {
+  const symbol = item.symbol;
+  const market = buildMarket(symbol);
+  const signal = item?.rawSignal || null;
+  if (!signal) return;
+
+  const marketState = String(signal?.marketState || "AMBIGUOUS");
+  const atrRatio = numberOrZero(signal?.metrics?.atrRatio);
+  const squeeze = Boolean(signal?.metrics?.squeeze);
+
+  const existingGrid = gridStates.get(symbol);
+
+  const shouldDisableGrid =
+    marketState !== "LATERAL_RANGE" ||
+    atrRatio >= 1.35 ||
+    squeeze;
+
+  if (shouldDisableGrid) {
+    if (existingGrid?.active) {
+      await cancelAllPendingOrders(market);
+      gridStates.delete(symbol);
+      runtime.lastAction = `grid_disabled_${symbol}`;
+    }
+    return;
+  }
+
+  const now = Date.now();
+  if (existingGrid?.lastPlacedAt && now - existingGrid.lastPlacedAt < 45_000) {
+    return;
+  }
+
+  const hasOpenTrade = [...activeTrades.values()].some((t) => t.symbol === symbol && t.status === "OPEN");
+  if (hasOpenTrade) return;
+
+  const [marketInfo, tickerList] = await Promise.all([
+    getMarketStatus(market),
+    getMarketTicker(market)
+  ]);
+
+  if (!marketInfo?.is_market_available || !marketInfo?.is_api_trading_available) return;
+
+  const ticker = Array.isArray(tickerList) ? tickerList[0] : null;
+  const markPrice = numberOrZero(ticker?.mark_price || ticker?.last);
+  if (markPrice <= 0) return;
+
+  const leverage = resolveLeverage(marketInfo, signal, symbol);
+  await setLeverage({ market, leverage, marginMode: runtime.marginMode });
+
+  const basePrecision = Number(marketInfo.base_ccy_precision);
+  const minAmount = numberOrZero(marketInfo.min_amount);
+
+  const plan = buildGridPlan({ signal, markPrice, marketInfo });
+  const safePercent = Math.min(getAdaptiveAutoPercent(symbol), 18);
+  const totalUsdtBudget = availableUsdt * (safePercent / 100);
+
+  if (totalUsdtBudget <= 0) return;
+
+  const perOrderMargin = totalUsdtBudget / (plan.buyLevels.length + plan.sellLevels.length);
+  const perOrderNotional = perOrderMargin * leverage;
+  if (perOrderNotional <= 0) return;
+
+  await cancelAllPendingOrders(market);
+
+  for (const priceText of plan.buyLevels) {
+    const price = numberOrZero(priceText);
+    if (price <= 0) continue;
+    const amountRaw = perOrderNotional / price;
+    const amount = Number(fixedByDecimals(Math.max(amountRaw, minAmount), basePrecision));
+    await placeFuturesOrder({
+      market,
+      side: "buy",
+      type: "limit",
+      price,
+      amount,
+      clientId: makeId(`GRID_B_${symbol}`)
+    });
+  }
+
+  for (const priceText of plan.sellLevels) {
+    const price = numberOrZero(priceText);
+    if (price <= 0) continue;
+    const amountRaw = perOrderNotional / price;
+    const amount = Number(fixedByDecimals(Math.max(amountRaw, minAmount), basePrecision));
+    await placeFuturesOrder({
+      market,
+      side: "sell",
+      type: "limit",
+      price,
+      amount,
+      clientId: makeId(`GRID_S_${symbol}`)
+    });
+  }
+
+  gridStates.set(symbol, {
+    active: true,
+    lastPlacedAt: now,
+    plan
+  });
+
+  runtime.lastAction = `grid_orders_placed_${symbol}`;
+}
+
+function buildLimitPlan({ signal, markPrice, marketInfo, direction }) {
+  const atrPct15 = numberOrZero(signal?.metrics?.atrPct15 || 0.25);
+  const spreadBufferPct = Math.max(atrPct15 * 0.12, 0.05);
+  const offsetPct = Math.max(atrPct15 * 0.35, spreadBufferPct);
+  const tick = numberOrZero(marketInfo?.tick_size || 0.0001);
+
+  const entryPrice = direction === "LONG"
+    ? fixedByTick(markPrice * (1 - offsetPct / 100), tick)
+    : fixedByTick(markPrice * (1 + offsetPct / 100), tick);
+
+  return {
+    entryPrice,
+    offsetPct: Number(offsetPct.toFixed(4)),
+    atrPct15: Number(atrPct15.toFixed(4)),
+    spreadBufferPct: Number(spreadBufferPct.toFixed(4)),
+    fillProbability: offsetPct <= atrPct15 ? 0.72 : 0.55
+  };
+}
 
 function resetDailyAccountStateIfNeeded() {
   const todayStart = new Date().setHours(0, 0, 0, 0);
@@ -466,14 +665,38 @@ function validateSignalForEntry(signal) {
   };
 }
 
-function validateScannerFindingForAuto(item) {
+function resolveAutoExecutionMode(item) {
+  const signal = item?.rawSignal || {};
+  const marketState = String(signal?.marketState || item?.marketState || "AMBIGUOUS");
+  const atrRatio = numberOrZero(signal?.metrics?.atrRatio || item?.atrRatio || 0);
+  const squeeze = Boolean(signal?.metrics?.squeeze);
+
+  if (
+    runtime.accountState.gridMode &&
+    marketState === "LATERAL_RANGE" &&
+    atrRatio > 0.8 &&
+    atrRatio < 1.25 &&
+    !squeeze
+  ) {
+    return "GRID";
+  }
+
+  if (runtime.accountState.sniperMode) return "SNIPER";
+  return "STANDARD";
+}
+
+function validateScannerFindingForAuto(item, mode = "STANDARD") {
   if (!item) return { ok: false, reason: "Finding vacía." };
 
   if (!item.direction || item.direction === "NO_TRADE") {
     return { ok: false, reason: "NO_TRADE" };
   }
 
-  if (numberOrZero(item.probability) < numberOrZero(config.auto.autoEntryProbability || 58)) {
+  const minProb = mode === "SNIPER"
+    ? Math.max(numberOrZero(config.auto.autoEntryProbability || 58), 60)
+    : numberOrZero(config.auto.autoEntryProbability || 58);
+
+  if (numberOrZero(item.probability) < minProb) {
     return { ok: false, reason: "Probabilidad insuficiente." };
   }
 
@@ -483,11 +706,13 @@ function validateScannerFindingForAuto(item) {
 
   const minScore = Math.max(
     getRiskThresholds().minScore,
-    numberOrZero(config.auto.autoMinScore || 45)
+    numberOrZero(config.auto.autoMinScore || 45),
+    mode === "SNIPER" ? 58 : 45
   );
   const minEdge = Math.max(
     getRiskThresholds().minEdge,
-    numberOrZero(config.auto.autoMinEdge || 6)
+    numberOrZero(config.auto.autoMinEdge || 6),
+    mode === "SNIPER" ? 10 : 6
   );
 
   if (numberOrZero(item.score) < minScore) {
@@ -595,11 +820,14 @@ async function findOpenPositionByMarket(market) {
   return (list || []).find((p) => p.market === market && hasOpenPosition(p)) || null;
 }
 
-async function waitForPosition({ market, retries = 12, delayMs = 500 }) {
-  for (let i = 0; i < retries; i += 1) {
+async function waitForPosition({ market, retries = 12, delayMs = 500, attempts, intervalMs }) {
+  const finalRetries = numberOrZero(attempts) > 0 ? Math.floor(numberOrZero(attempts)) : retries;
+  const finalDelayMs = numberOrZero(intervalMs) > 0 ? numberOrZero(intervalMs) : delayMs;
+
+  for (let i = 0; i < finalRetries; i += 1) {
     const position = await findOpenPositionByMarket(market);
     if (position) return position;
-    await sleep(delayMs);
+    await sleep(finalDelayMs);
   }
   return null;
 }
@@ -630,6 +858,9 @@ async function buildTradePreview(params) {
       .reduce((acc, t) => acc + numberOrZero(t.marginUsed || t.usableMargin || 0), 0)
   });
   if (!gate.ok) throw new Error(gate.reason);
+
+  const antiOvertrade = canPassAntiOvertradingGuards();
+  if (!antiOvertrade.ok) throw new Error(antiOvertrade.reason);
 
   const { edge } = validateSignalForEntry(signal);
 
@@ -684,6 +915,10 @@ async function buildTradePreview(params) {
     sizing
   });
 
+  if (signal.marketState === "AMBIGUOUS") {
+    throw new Error("Mercado ambiguo: no se permite entrada.");
+  }
+
   const direction = signal.suggestedAction;
   if (direction !== "LONG" && direction !== "SHORT") {
     throw new Error(`Dirección inválida de señal: ${direction}`);
@@ -733,6 +968,7 @@ async function buildTradePreview(params) {
       rawAmount: sizing.amount,
       minAmount: adjustedSizing.minAmount,
       entryReference: markPrice,
+      entryType: "limit",
       stopLoss,
       takeProfit,
       stopLossPct,
@@ -852,19 +1088,28 @@ async function executeDraftTrade(draftId, meta = {}) {
       marginMode: runtime.marginMode
     });
 
+    const limitPlan = buildLimitPlan({
+      signal: freshSignal,
+      markPrice: liveMarkPrice,
+      marketInfo,
+      direction: draft.direction
+    });
+
     await placeFuturesOrder({
       market,
       side: draft.side,
-      type: "market",
+      type: "limit",
+      price: limitPlan.entryPrice,
       amount: fixedByDecimals(adjustedSizing.finalAmount, basePrecision),
-      clientId: makeId(draft.direction)
+      clientId: makeId(`${draft.direction}_LMT`)
     });
 
     orderPlaced = true;
 
-    const position = await waitForPosition({ market });
+    const position = await waitForPosition({ market, attempts: 18, intervalMs: 1200 });
     if (!position) {
-      throw new Error("La posición no se confirmó a tiempo.");
+      await cancelAllPendingOrders(market);
+      throw new Error("La orden límite no se ejecutó a tiempo. Cancelada para no perseguir precio.");
     }
 
     const entryPrice = numberOrZero(position.avg_entry_price) || liveMarkPrice;
@@ -925,10 +1170,14 @@ async function executeDraftTrade(draftId, meta = {}) {
       autoOpened: Boolean(meta.autoOpened),
       autoOpenedAt: meta.autoOpened ? Date.now() : null,
       autoCloseTargetRoe: meta.autoOpened ? config.auto.autoTakeProfitRoe : null,
-      closeReason: null
+      closeReason: trade.closeReason || null,
+      details: trade.details || {}
     };
 
     activeTrades.set(tradeId, tradeRecord);
+    runtime.accountState.lastTradeAt = Date.now();
+    runtime.accountState.hourTradeTimestamps.push(Date.now());
+    runtime.accountState.dayTradeTimestamps.push(Date.now());
     markSymbolTradeOpen(tradeRecord.symbol);
 
     if (tradeRecord.autoOpened) {
@@ -1008,7 +1257,7 @@ async function closeTradeById(tradeId, reason = "AUTO_CLOSE") {
 
     activeTrades.delete(tradeId);
     markSymbolTradeClose(trade.symbol, pnlPct);
-    logTradeClose(tradeId);
+    logTradeClose(tradeId, { closeReason: reason, closedPrice: numberOrZero(currentPosition?.mark_price || currentPosition?.last) });
 
     autoClosedTrades.unshift({
       tradeId: trade.tradeId,
@@ -1118,7 +1367,15 @@ async function runAutoEntryCycle() {
     try {
       if (isBlockedSymbol(item.symbol)) continue;
 
-      const findingCheck = validateScannerFindingForAuto(item);
+      const mode = resolveAutoExecutionMode(item);
+      runtime.accountState.autoExecutionMode = mode;
+
+      if (mode === "GRID") {
+        await runGridExecutionForSymbol(item, availableUsdt);
+        continue;
+      }
+
+      const findingCheck = validateScannerFindingForAuto(item, mode);
       if (!findingCheck.ok) continue;
 
       const active = [...activeTrades.values()];
@@ -1199,7 +1456,8 @@ app.get("/api/health", async (_req, res) => {
     autoEntryProbability: config.auto.autoEntryProbability,
     autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
     guardrailReason: runtime.accountState.guardrailReason,
-    autoPauseUntil: runtime.accountState.autoPauseUntil
+    autoPauseUntil: runtime.accountState.autoPauseUntil,
+    autoExecutionMode: runtime.accountState.autoExecutionMode
   });
 });
 
@@ -1318,7 +1576,8 @@ app.get("/api/auto-status", async (_req, res) => {
     autoEntryProbability: config.auto.autoEntryProbability,
     autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
     guardrailReason: runtime.accountState.guardrailReason,
-    autoPauseUntil: runtime.accountState.autoPauseUntil
+    autoPauseUntil: runtime.accountState.autoPauseUntil,
+    autoExecutionMode: runtime.accountState.autoExecutionMode
   });
 });
 
@@ -1396,7 +1655,9 @@ app.get("/api/status", async (_req, res) => {
         autoEntryProbability: config.auto.autoEntryProbability,
         autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
         guardrailReason: runtime.accountState.guardrailReason,
-        autoPauseUntil: runtime.accountState.autoPauseUntil
+        autoPauseUntil: runtime.accountState.autoPauseUntil,
+        autoExecutionMode: runtime.accountState.autoExecutionMode,
+    autoExecutionMode: runtime.accountState.autoExecutionMode
       }
     });
   } catch (error) {
@@ -1424,6 +1685,29 @@ app.post("/api/close-trade/:tradeId", async (req, res) => {
   }
 });
 
+
+app.post("/api/grid-mode", (req, res) => {
+  try {
+    const enabled = Boolean(req.body?.enabled);
+    runtime.accountState.gridMode = enabled;
+    runtime.lastAction = enabled ? "grid_mode_on" : "grid_mode_off";
+    res.json({ ok: true, gridMode: runtime.accountState.gridMode });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/sniper-mode", (req, res) => {
+  try {
+    const enabled = Boolean(req.body?.enabled);
+    runtime.accountState.sniperMode = enabled;
+    runtime.lastAction = enabled ? "sniper_mode_on" : "sniper_mode_off";
+    res.json({ ok: true, sniperMode: runtime.accountState.sniperMode });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 function hydrateStateFromDb() {
   const openTrades = getOpenTrades();
 
@@ -1446,7 +1730,8 @@ function hydrateStateFromDb() {
       autoOpened: false,
       autoOpenedAt: null,
       autoCloseTargetRoe: null,
-      closeReason: null
+      closeReason: trade.closeReason || null,
+      details: trade.details || {}
     });
 
     markSymbolTradeOpen(trade.symbol);

@@ -86,18 +86,18 @@ export function resolveLeverage(marketInfo, signal, symbol) {
   if (confidence === "HIGH" && score >= 75 && edge >= 18) {
     lev = 20;
   } else if (confidence === "MEDIUM" && score >= 65 && edge >= 12) {
-    lev = 10;
+    lev = 15;
   } else if (score >= 58 && edge >= 10) {
-    lev = 5;
+    lev = 10;
   } else {
-    lev = 3;
+    lev = 5;
   }
 
-  if (regime === "COMPRESSION") lev = Math.min(lev, 3);
-  if (regime === "TRANSITION") lev = Math.min(lev, 5);
+  if (regime === "COMPRESSION") lev = Math.min(lev, 10);
+  if (regime === "TRANSITION") lev = Math.min(lev, 10);
 
   if (isMemeSymbol(symbol) || REDUCED_SET.has(symbol)) {
-    lev = Math.min(lev, 5);
+    lev = Math.min(lev, 8);
   }
 
   return clamp(lev, 1, cap);

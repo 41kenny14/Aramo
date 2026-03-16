@@ -306,12 +306,13 @@ export async function setLeverage({ market, leverage, marginMode }) {
   });
 }
 
-export async function placeFuturesOrder({ market, side, type = "market", amount, clientId }) {
+export async function placeFuturesOrder({ market, side, type = "market", amount, clientId, price }) {
   assertNonEmptyString("market", market);
   assertOneOf("side", side, ["buy", "sell"]);
   assertOneOf("type", type, ["market", "limit"]);
   assertPositiveNumber("amount", amount);
   assertNonEmptyString("clientId", clientId);
+  if (type === "limit") assertPositiveNumber("price", price);
 
   return privateRequest({
     method: "POST",
@@ -322,7 +323,21 @@ export async function placeFuturesOrder({ market, side, type = "market", amount,
       side,
       type,
       amount: String(amount),
+      price: type === "limit" ? String(price) : undefined,
       client_id: clientId
+    }
+  });
+}
+
+export async function cancelAllPendingOrders(market) {
+  assertNonEmptyString("market", market);
+
+  return privateRequest({
+    method: "POST",
+    path: "/futures/cancel-all-order",
+    body: {
+      market,
+      market_type: "FUTURES"
     }
   });
 }

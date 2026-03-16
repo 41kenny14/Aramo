@@ -88,6 +88,8 @@
               </button>
             </div>
           </div>
+          <button id="gridModeBtn" class="btn btn-secondary" title="Alternar grid mode">GRID OFF</button>
+          <button id="sniperModeBtn" class="btn btn-secondary" title="Alternar sniper mode">SNIPER ON</button>
           <button id="refreshBtn" class="icon-btn" title="Refrescar dashboard">
             <svg width="15" height="15" viewBox="0 0 15 15" fill="none"><path d="M13 7.5A5.5 5.5 0 112.5 5M1 2v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
@@ -150,6 +152,10 @@
               </div>
               <span>Sin datos de señal</span>
               <div id="signalExtraInfo" class="banner-extra">—</div>
+            </div>
+            <div class="panel" style="margin-top:12px;">
+              <div class="panel-header"><h3>ESTADO DEL BOT / RAZONAMIENTO</h3></div>
+              <pre id="botReasoning" class="json-box">Sin datos aún.</pre>
             </div>
 
             <!-- SIGNAL CONFIG PANEL -->

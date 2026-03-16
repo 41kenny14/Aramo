@@ -397,35 +397,6 @@ function renderScannerFindings(findings) {
 
   setHTML("scannerAlertBox", visible.map(scannerCardHtml).join(""));
 }
-function renderScannerStats(data) {
-  const statsEl = qs("scannerStatsBox");
-  if (!statsEl) return;
-
-  const scanner = data?.scanner || {};
-  const stats = scanner.lastStats || null;
-
-  if (!stats) {
-    statsEl.textContent = "Sin estadísticas de scanner todavía.";
-    return;
-  }
-
-  const rejectedBy = stats.rejectedBy || {};
-  const totals = stats.totals || {};
-  const batch = stats.batch || {};
-  const cfg = stats.config || {};
-
-  statsEl.textContent =
-    `Batch ${batch.start}-${batch.end} (${batch.size}) | ` +
-    `inspected=${totals.inspected ?? 0} fulfilled=${totals.fulfilled ?? 0} accepted=${totals.accepted ?? 0} rejected=${totals.rejected ?? 0} errors=${totals.requestErrors ?? 0} kept=${totals.keptAfterMerge ?? 0}\n` +
-    `cfg: prob>=${cfg.minProbability} score>=${cfg.minScore} edge>=${cfg.minEdge} period=${cfg.signalPeriod}\n` +
-    `rejectedBy: ` +
-    `NO_TRADE=${rejectedBy.NO_TRADE ?? 0}, ` +
-    `LOW_PROBABILITY=${rejectedBy.LOW_PROBABILITY ?? 0}, ` +
-    `LOW_SCORE=${rejectedBy.LOW_SCORE ?? 0}, ` +
-    `LOW_EDGE=${rejectedBy.LOW_EDGE ?? 0}, ` +
-    `LOW_CONFIDENCE=${rejectedBy.LOW_CONFIDENCE ?? 0}, ` +
-    `COMPRESSION=${rejectedBy.COMPRESSION ?? 0}`;
-}
 async function loadSymbols(forceRefresh = false) {
   const suffix = forceRefresh ? "?refresh=1" : "";
   const data = await api(`/api/symbols${suffix}`);

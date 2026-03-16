@@ -74,6 +74,7 @@ const autoOpenedTrades = [];
 const autoClosedTrades = [];
 const symbolState = new Map();
 const symbolLocks = new Map();
+const gridStates = new Map();
 
 const MAX_DRAFT_AGE_MS = 60 * 1000;
 
@@ -128,6 +129,147 @@ function canPassAntiOvertradingGuards() {
   }
 
   return { ok: true, reason: "OK" };
+}
+
+function buildGridPlan({ signal, markPrice, marketInfo }) {
+  const gridLevels = Math.max(2, Math.floor(numberOrZero(config.strategy?.gridLevels || 6)));
+  const levelsEachSide = Math.max(1, Math.floor(gridLevels / 2));
+  const atrPct15 = numberOrZero(signal?.metrics?.atrPct15 || 0.2);
+  const stepPct = Math.max(
+    numberOrZero(config.strategy?.gridStepPct || 0.25),
+    atrPct15 * numberOrZero(config.strategy?.gridStepAtrMultiplier || 0.8)
+  );
+
+  const liqTop = numberOrZero(signal?.metrics?.liquidityBuySide);
+  const liqBottom = numberOrZero(signal?.metrics?.liquiditySellSide);
+
+  const fallbackTop = markPrice * (1 + ((stepPct * (levelsEachSide + 1)) / 100));
+  const fallbackBottom = markPrice * (1 - ((stepPct * (levelsEachSide + 1)) / 100));
+
+  const upperBound = liqTop > markPrice ? liqTop : fallbackTop;
+  const lowerBound = liqBottom > 0 && liqBottom < markPrice ? liqBottom : fallbackBottom;
+
+  const tick = numberOrZero(marketInfo?.tick_size || 0.0001);
+  const buyLevels = [];
+  const sellLevels = [];
+
+  for (let i = 1; i <= levelsEachSide; i += 1) {
+    buyLevels.push(fixedByTick(markPrice * (1 - ((stepPct * i) / 100)), tick));
+    sellLevels.push(fixedByTick(markPrice * (1 + ((stepPct * i) / 100)), tick));
+  }
+
+  return {
+    gridLevels,
+    levelsEachSide,
+    stepPct: Number(stepPct.toFixed(4)),
+    atrPct15: Number(atrPct15.toFixed(4)),
+    upperBound: Number(upperBound.toFixed(8)),
+    lowerBound: Number(lowerBound.toFixed(8)),
+    buyLevels,
+    sellLevels
+  };
+}
+
+async function runGridExecutionForSymbol(item, availableUsdt) {
+  const symbol = item.symbol;
+  const market = buildMarket(symbol);
+  const signal = item?.rawSignal || null;
+  if (!signal) return;
+
+  const marketState = String(signal?.marketState || "AMBIGUOUS");
+  const atrRatio = numberOrZero(signal?.metrics?.atrRatio);
+  const squeeze = Boolean(signal?.metrics?.squeeze);
+
+  const existingGrid = gridStates.get(symbol);
+
+  const shouldDisableGrid =
+    marketState !== "LATERAL_RANGE" ||
+    atrRatio >= 1.35 ||
+    squeeze;
+
+  if (shouldDisableGrid) {
+    if (existingGrid?.active) {
+      await cancelAllPendingOrders(market);
+      gridStates.delete(symbol);
+      runtime.lastAction = `grid_disabled_${symbol}`;
+    }
+    return;
+  }
+
+  const now = Date.now();
+  if (existingGrid?.lastPlacedAt && now - existingGrid.lastPlacedAt < 45_000) {
+    return;
+  }
+
+  const hasOpenTrade = [...activeTrades.values()].some((t) => t.symbol === symbol && t.status === "OPEN");
+  if (hasOpenTrade) return;
+
+  const [marketInfo, tickerList] = await Promise.all([
+    getMarketStatus(market),
+    getMarketTicker(market)
+  ]);
+
+  if (!marketInfo?.is_market_available || !marketInfo?.is_api_trading_available) return;
+
+  const ticker = Array.isArray(tickerList) ? tickerList[0] : null;
+  const markPrice = numberOrZero(ticker?.mark_price || ticker?.last);
+  if (markPrice <= 0) return;
+
+  const leverage = resolveLeverage(marketInfo, signal, symbol);
+  await setLeverage({ market, leverage, marginMode: runtime.marginMode });
+
+  const basePrecision = Number(marketInfo.base_ccy_precision);
+  const minAmount = numberOrZero(marketInfo.min_amount);
+
+  const plan = buildGridPlan({ signal, markPrice, marketInfo });
+  const safePercent = Math.min(getAdaptiveAutoPercent(symbol), 18);
+  const totalUsdtBudget = availableUsdt * (safePercent / 100);
+
+  if (totalUsdtBudget <= 0) return;
+
+  const perOrderMargin = totalUsdtBudget / (plan.buyLevels.length + plan.sellLevels.length);
+  const perOrderNotional = perOrderMargin * leverage;
+  if (perOrderNotional <= 0) return;
+
+  await cancelAllPendingOrders(market);
+
+  for (const priceText of plan.buyLevels) {
+    const price = numberOrZero(priceText);
+    if (price <= 0) continue;
+    const amountRaw = perOrderNotional / price;
+    const amount = Number(fixedByDecimals(Math.max(amountRaw, minAmount), basePrecision));
+    await placeFuturesOrder({
+      market,
+      side: "buy",
+      type: "limit",
+      price,
+      amount,
+      clientId: makeId(`GRID_B_${symbol}`)
+    });
+  }
+
+  for (const priceText of plan.sellLevels) {
+    const price = numberOrZero(priceText);
+    if (price <= 0) continue;
+    const amountRaw = perOrderNotional / price;
+    const amount = Number(fixedByDecimals(Math.max(amountRaw, minAmount), basePrecision));
+    await placeFuturesOrder({
+      market,
+      side: "sell",
+      type: "limit",
+      price,
+      amount,
+      clientId: makeId(`GRID_S_${symbol}`)
+    });
+  }
+
+  gridStates.set(symbol, {
+    active: true,
+    lastPlacedAt: now,
+    plan
+  });
+
+  runtime.lastAction = `grid_orders_placed_${symbol}`;
 }
 
 function buildLimitPlan({ signal, markPrice, marketInfo, direction }) {
@@ -1229,7 +1371,7 @@ async function runAutoEntryCycle() {
       runtime.accountState.autoExecutionMode = mode;
 
       if (mode === "GRID") {
-        runtime.lastAction = `auto_grid_watch_${item.symbol}`;
+        await runGridExecutionForSymbol(item, availableUsdt);
         continue;
       }
 

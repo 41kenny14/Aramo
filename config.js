@@ -100,6 +100,24 @@ const config = {
     defaultSignalPeriod: envStr("AUTO_DEFAULT_SIGNAL_PERIOD", "5min")
   },
 
+  strategy: {
+    edgeScoreThreshold: envNum("EDGE_SCORE_THRESHOLD", 62),
+    minEstimatedSuccessProb: envNum("MIN_ESTIMATED_SUCCESS_PROB", 55),
+    sniperMode: envBool("SNIPER_MODE", true),
+    gridModeEnabled: envBool("GRID_MODE_ENABLED", false),
+    gridLevels: envNum("GRID_LEVELS", 6),
+    gridStepAtrMultiplier: envNum("GRID_STEP_ATR_MULTIPLIER", 0.8),
+    gridStepPct: envNum("GRID_STEP_PCT", 0.25),
+    minMinutesBetweenTrades: envNum("MIN_MINUTES_BETWEEN_TRADES", 10),
+    maxTradesPerHour: envNum("MAX_TRADES_PER_HOUR", 3),
+    maxTradesPerDay: envNum("MAX_TRADES_PER_DAY_GLOBAL", 12),
+    maxDailyDrawdownPct: envNum("MAX_DAILY_DRAWDOWN_PCT", 3),
+    maxConsecutiveLossesPause: envNum("MAX_CONSECUTIVE_LOSSES_PAUSE", 3),
+    pauseMinutesAfterLossStreak: envNum("PAUSE_MINUTES_AFTER_LOSS_STREAK", 90),
+    minTradesForOptimization: envNum("MIN_TRADES_FOR_OPTIMIZATION", 30),
+    optimizationWindowTrades: envNum("OPTIMIZATION_WINDOW_TRADES", 80)
+  },
+
   dbPath: envStr("DB_PATH", "./coinex_pro_bot.db")
 };
 
@@ -208,6 +226,19 @@ function assertConfig() {
   assertRange("AUTO_DEFAULT_PERCENT", config.auto.defaultPercent, { min: 1, max: 100 });
   assertRange("AUTO_DEFAULT_STOP_LOSS_PCT", config.auto.defaultStopLossPct, { min: 0.01, max: 50 });
   assertRange("AUTO_DEFAULT_TAKE_PROFIT_PCT", config.auto.defaultTakeProfitPct, { min: 0.01, max: 100 });
+  assertRange("EDGE_SCORE_THRESHOLD", config.strategy.edgeScoreThreshold, { min: 1, max: 100 });
+  assertRange("MIN_ESTIMATED_SUCCESS_PROB", config.strategy.minEstimatedSuccessProb, { min: 1, max: 99 });
+  assertRange("GRID_LEVELS", config.strategy.gridLevels, { min: 2, max: 30 });
+  assertRange("GRID_STEP_ATR_MULTIPLIER", config.strategy.gridStepAtrMultiplier, { min: 0.1, max: 5 });
+  assertRange("GRID_STEP_PCT", config.strategy.gridStepPct, { min: 0.05, max: 10 });
+  assertRange("MIN_MINUTES_BETWEEN_TRADES", config.strategy.minMinutesBetweenTrades, { min: 0, max: 1440 });
+  assertRange("MAX_TRADES_PER_HOUR", config.strategy.maxTradesPerHour, { min: 1, max: 120 });
+  assertRange("MAX_TRADES_PER_DAY_GLOBAL", config.strategy.maxTradesPerDay, { min: 1, max: 500 });
+  assertRange("MAX_DAILY_DRAWDOWN_PCT", config.strategy.maxDailyDrawdownPct, { min: 0.1, max: 100 });
+  assertRange("MAX_CONSECUTIVE_LOSSES_PAUSE", config.strategy.maxConsecutiveLossesPause, { min: 1, max: 20 });
+  assertRange("PAUSE_MINUTES_AFTER_LOSS_STREAK", config.strategy.pauseMinutesAfterLossStreak, { min: 1, max: 10080 });
+  assertRange("MIN_TRADES_FOR_OPTIMIZATION", config.strategy.minTradesForOptimization, { min: 10, max: 2000 });
+  assertRange("OPTIMIZATION_WINDOW_TRADES", config.strategy.optimizationWindowTrades, { min: 20, max: 5000 });
 
   if (config.auto.defaultTakeProfitPct <= config.auto.defaultStopLossPct) {
     console.warn(

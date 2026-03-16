@@ -189,7 +189,7 @@ function renderSignal(signal) {
 
   setText("metricLongProb", `${formatNum(signal.probabilities?.longProb, 1)}%`);
   setText("metricShortProb", `${formatNum(signal.probabilities?.shortProb, 1)}%`);
-  setText("metricRegime", signal.regime ?? "-");
+  setText("metricRegime", `${signal.regime ?? "-"} · ${signal.marketState || "-"} (${formatNum(signal.marketStateConfidence,1)}%)`);
   setText("metricBias1h", signal.mtf?.bias1h ?? "-");
   setText("metricBias15m", signal.mtf?.bias15m ?? "-");
   setText("metricBiasTrigger", signal.mtf?.triggerBias ?? "-");
@@ -205,10 +205,25 @@ function renderSignal(signal) {
   const extra = qs("signalExtraInfo");
   if (extra) {
     extra.textContent =
-      `ADX15 ${formatNum(adx15, 2)} · Dist EMA20 ${formatNum(distEma20, 3)}% · ` +
+      `ADX15 ${formatNum(adx15, 2)} · Dist EMA20 ${formatNum(distEma20, 3)}% · EDGE_SCORE ${formatNum(signal.edgeScore,2)} · Prob ${formatNum(signal.estimatedSuccessProb,1)}% · ` +
       `Body ${formatNum(bodyStrength5, 3)} · UpWick ${formatNum(upperWick5, 3)} · LowWick ${formatNum(lowerWick5, 3)} · ` +
       `Setup ${setupType} · BullConf ${bullConfirm ? "Sí" : "No"} · BearConf ${bearConfirm ? "Sí" : "No"} · ` +
       `OI ${signal.metrics?.oiConfirmation || "-"}`;
+  }
+
+
+  const reasoningPanel = qs("botReasoning");
+  if (reasoningPanel) {
+    const txt = {
+      marketState: signal.marketState,
+      confidence: signal.marketStateConfidence,
+      edgeScore: signal.edgeScore,
+      estimatedSuccessProb: signal.estimatedSuccessProb,
+      summary: signal.reasoning?.summary,
+      waitingFor: signal.reasoning?.waitingFor || [],
+      nextLevels: signal.reasoning?.nextLevels || {}
+    };
+    reasoningPanel.textContent = JSON.stringify(txt, null, 2);
   }
 
   setSignalAlertClass(signal.suggestedAction, signal.confidence);
@@ -382,36 +397,6 @@ function renderScannerFindings(findings) {
 
   setHTML("scannerAlertBox", visible.map(scannerCardHtml).join(""));
 }
-function renderScannerStats(data) {
-  const statsEl = qs("scannerStatsBox");
-  if (!statsEl) return;
-
-  const scanner = data?.scanner || {};
-  const stats = scanner.lastStats || null;
-
-  if (!stats) {
-    statsEl.textContent = "Sin estadísticas de scanner todavía.";
-    return;
-  }
-
-  const rejectedBy = stats.rejectedBy || {};
-  const totals = stats.totals || {};
-  const batch = stats.batch || {};
-  const cfg = stats.config || {};
-
-  statsEl.textContent =
-    `Batch ${batch.start}-${batch.end} (${batch.size}) | ` +
-    `inspected=${totals.inspected ?? 0} fulfilled=${totals.fulfilled ?? 0} accepted=${totals.accepted ?? 0} rejected=${totals.rejected ?? 0} errors=${totals.requestErrors ?? 0} kept=${totals.keptAfterMerge ?? 0}\n` +
-    `cfg: prob>=${cfg.minProbability} score>=${cfg.minScore} edge>=${cfg.minEdge} period=${cfg.signalPeriod}\n` +
-    `rejectedBy: ` +
-    `NO_TRADE=${rejectedBy.NO_TRADE ?? 0}, ` +
-    `LOW_PROBABILITY=${rejectedBy.LOW_PROBABILITY ?? 0}, ` +
-    `LOW_SCORE=${rejectedBy.LOW_SCORE ?? 0}, ` +
-    `LOW_EDGE=${rejectedBy.LOW_EDGE ?? 0}, ` +
-    `LOW_CONFIDENCE=${rejectedBy.LOW_CONFIDENCE ?? 0}, ` +
-    `COMPRESSION=${rejectedBy.COMPRESSION ?? 0}`;
-}
-
 async function loadSymbols(forceRefresh = false) {
   const suffix = forceRefresh ? "?refresh=1" : "";
   const data = await api(`/api/symbols${suffix}`);
@@ -480,6 +465,12 @@ async function loadStatus() {
     setText("botAction", bot.lastAction || "-");
     setText("botError", bot.lastError || "-");
     setText("rawStatus", JSON.stringify(data, null, 2));
+    const sniperOn = Boolean(bot?.accountState?.sniperMode);
+    const gridOn = Boolean(bot?.accountState?.gridMode);
+    const sniperBtn = qs("sniperModeBtn");
+    const gridBtn = qs("gridModeBtn");
+    if (sniperBtn) sniperBtn.textContent = sniperOn ? "SNIPER ON" : "SNIPER OFF";
+    if (gridBtn) gridBtn.textContent = gridOn ? "GRID ON" : "GRID OFF";
 
     const drafts = data.drafts || [];
     setHTML(
@@ -698,6 +689,41 @@ async function toggleAutoTrading() {
   }
 }
 
+
+async function toggleGridMode() {
+  try {
+    await withButtonLock("gridModeBtn", async () => {
+      const isOn = (qs("gridModeBtn")?.textContent || "").includes("ON");
+      const data = await api("/api/grid-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !isOn })
+      });
+      setResult(data.gridMode ? "Grid mode activado." : "Grid mode desactivado.");
+      await loadStatus();
+    });
+  } catch (e) {
+    setResult(e.message, true);
+  }
+}
+
+async function toggleSniperMode() {
+  try {
+    await withButtonLock("sniperModeBtn", async () => {
+      const isOn = (qs("sniperModeBtn")?.textContent || "").includes("ON");
+      const data = await api("/api/sniper-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !isOn })
+      });
+      setResult(data.sniperMode ? "Sniper mode activado." : "Sniper mode desactivado.");
+      await loadStatus();
+    });
+  } catch (e) {
+    setResult(e.message, true);
+  }
+}
+
 window.executeDraft = executeDraft;
 window.cancelDraft = cancelDraft;
 window.closeTrade = closeTrade;
@@ -717,6 +743,8 @@ qs("symbol")?.addEventListener("change", async () => {
 
 qs("autoToggleBtn")?.addEventListener("click", toggleAutoTrading);
 qs("signalPeriod")?.addEventListener("change", loadSignal);
+qs("gridModeBtn")?.addEventListener("click", toggleGridMode);
+qs("sniperModeBtn")?.addEventListener("click", toggleSniperMode);
 
 qs("reloadSymbolsBtn")?.addEventListener("click", async () => {
   try {

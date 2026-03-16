@@ -5,6 +5,12 @@ const db = new Database(config.dbPath);
 
 db.pragma("journal_mode = WAL");
 
+function safeAlter(sql) {
+  try {
+    db.exec(sql);
+  } catch {}
+}
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS signal_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,7 +57,17 @@ CREATE TABLE IF NOT EXISTS trade_advice_logs (
   prob_against_side REAL NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS optimization_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `);
+
+safeAlter(`ALTER TABLE trade_logs ADD COLUMN details_json TEXT`);
+safeAlter(`ALTER TABLE trade_logs ADD COLUMN closed_price REAL`);
+safeAlter(`ALTER TABLE trade_logs ADD COLUMN close_reason TEXT`);
 
 const insertSignalStmt = db.prepare(`
 INSERT INTO signal_logs (
@@ -66,16 +82,16 @@ INSERT INTO signal_logs (
 const insertTradeStmt = db.prepare(`
 INSERT OR REPLACE INTO trade_logs (
   trade_id, symbol, market, side, direction, confidence, leverage, percent, amount,
-  entry_price, stop_loss, take_profit, signal_period, status, opened_at, closed_at
+  entry_price, stop_loss, take_profit, signal_period, status, opened_at, closed_at, details_json, closed_price, close_reason
 ) VALUES (
   @trade_id, @symbol, @market, @side, @direction, @confidence, @leverage, @percent, @amount,
-  @entry_price, @stop_loss, @take_profit, @signal_period, @status, @opened_at, @closed_at
+  @entry_price, @stop_loss, @take_profit, @signal_period, @status, @opened_at, @closed_at, @details_json, @closed_price, @close_reason
 )
 `);
 
 const updateTradeStatusStmt = db.prepare(`
 UPDATE trade_logs
-SET status = @status, closed_at = @closed_at
+SET status = @status, closed_at = @closed_at, close_reason = @close_reason, closed_price = @closed_price
 WHERE trade_id = @trade_id
 `);
 
@@ -86,7 +102,6 @@ INSERT INTO trade_advice_logs (
   @trade_id, @recommendation, @reason, @pnl_pct, @score, @prob_for_side, @prob_against_side, @created_at
 )
 `);
-
 
 const selectOpenTradesStmt = db.prepare(`
 SELECT
@@ -105,7 +120,10 @@ SELECT
   signal_period,
   status,
   opened_at,
-  closed_at
+  closed_at,
+  details_json,
+  closed_price,
+  close_reason
 FROM trade_logs
 WHERE status = 'OPEN'
 ORDER BY opened_at DESC
@@ -144,18 +162,22 @@ export function logTradeOpen(trade) {
     signal_period: trade.signalPeriod,
     status: trade.status,
     opened_at: trade.openedAt,
-    closed_at: null
+    closed_at: null,
+    details_json: JSON.stringify(trade.details || {}),
+    closed_price: null,
+    close_reason: null
   });
 }
 
-export function logTradeClose(tradeId) {
+export function logTradeClose(tradeId, meta = {}) {
   updateTradeStatusStmt.run({
     trade_id: tradeId,
     status: "CLOSED",
-    closed_at: Date.now()
+    closed_at: Date.now(),
+    close_reason: meta.closeReason || null,
+    closed_price: meta.closedPrice ?? null
   });
 }
-
 
 export function getOpenTrades() {
   return selectOpenTradesStmt.all().map((row) => ({
@@ -174,7 +196,10 @@ export function getOpenTrades() {
     signalPeriod: row.signal_period,
     status: row.status,
     openedAt: row.opened_at,
-    closedAt: row.closed_at
+    closedAt: row.closed_at,
+    details: row.details_json ? JSON.parse(row.details_json) : {},
+    closedPrice: row.closed_price,
+    closeReason: row.close_reason
   }));
 }
 

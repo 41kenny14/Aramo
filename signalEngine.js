@@ -1,5 +1,6 @@
 import { getMarketTicker, getMarketKline } from "./coinex.js";
 import { logSignal } from "./db.js";
+import config from "./config.js";
 
 const oiStore = new Map();
 
@@ -19,49 +20,6 @@ function sma(values) {
 
 function last(arr) {
   return arr[arr.length - 1];
-}
-
-function periodToMs(period) {
-  const map = {
-    "1min": 60_000,
-    "3min": 180_000,
-    "5min": 300_000,
-    "15min": 900_000,
-    "30min": 1_800_000,
-    "1hour": 3_600_000,
-    "2hour": 7_200_000,
-    "4hour": 14_400_000,
-    "6hour": 21_600_000,
-    "12hour": 43_200_000,
-    "1day": 86_400_000,
-    "3day": 259_200_000,
-    "1week": 604_800_000
-  };
-
-  return map[period] || 0;
-}
-
-function normalizeTimestamp(ts) {
-  const raw = num(ts);
-  if (!raw) return 0;
-  return raw < 1e12 ? raw * 1000 : raw;
-}
-
-function toClosedCandles(candles, period) {
-  if (!Array.isArray(candles) || candles.length < 2) return candles || [];
-
-  const periodMs = periodToMs(period);
-  if (!periodMs) return candles;
-
-  const sorted = [...candles].sort((a, b) => num(a.created_at) - num(b.created_at));
-  const lastTs = normalizeTimestamp(last(sorted)?.created_at);
-  if (!lastTs) return sorted;
-
-  const isOpenCandle = Date.now() - lastTs < periodMs;
-  if (!isOpenCandle) return sorted;
-
-  // Evita usar la vela en formación: reduce flicker/invalidaciones inmediatas.
-  return sorted.slice(0, -1);
 }
 
 function periodToMs(period) {
@@ -517,6 +475,137 @@ function detectBreakoutOrPullback(candles, trendBias, volumeRatio, lookback = 8)
   };
 }
 
+
+
+function calcVwap(candles) {
+  if (!candles?.length) return 0;
+  let pv = 0;
+  let vv = 0;
+  for (const c of candles) {
+    const h = num(c.high);
+    const l = num(c.low);
+    const cl = num(c.close);
+    const vol = num(c.volume);
+    const tp = (h + l + cl) / 3;
+    pv += tp * vol;
+    vv += vol;
+  }
+  return vv > 0 ? pv / vv : num(last(candles)?.close);
+}
+
+function detectStructure(candles, lookback = 14) {
+  if (!candles || candles.length < lookback + 3) return { label: "MIXED", confidence: 0.2, hh: 0, hl: 0, lh: 0, ll: 0 };
+  const slice = candles.slice(-lookback);
+  let hh = 0, hl = 0, lh = 0, ll = 0;
+  for (let i = 1; i < slice.length; i += 1) {
+    const p = slice[i - 1];
+    const c = slice[i];
+    if (num(c.high) > num(p.high)) hh += 1;
+    if (num(c.low) > num(p.low)) hl += 1;
+    if (num(c.high) < num(p.high)) lh += 1;
+    if (num(c.low) < num(p.low)) ll += 1;
+  }
+
+  const upVotes = hh + hl;
+  const downVotes = lh + ll;
+  const total = Math.max(upVotes + downVotes, 1);
+  const confidence = Math.abs(upVotes - downVotes) / total;
+  const label = upVotes > downVotes ? "BULLISH_STRUCTURE" : downVotes > upVotes ? "BEARISH_STRUCTURE" : "MIXED";
+  return { label, confidence: Number(confidence.toFixed(3)), hh, hl, lh, ll };
+}
+
+function detectLiquidityZones(candles, lookback = 24) {
+  if (!candles || candles.length < lookback) return { buySide: 0, sellSide: 0, risk: "LOW" };
+  const recent = candles.slice(-lookback);
+  const highs = recent.map((c) => num(c.high));
+  const lows = recent.map((c) => num(c.low));
+  const buySide = Math.max(...highs);
+  const sellSide = Math.min(...lows);
+  const mid = (buySide + sellSide) / 2;
+  const close = num(last(recent)?.close);
+  const distPct = mid > 0 ? Math.abs(((close - mid) / mid) * 100) : 0;
+  return { buySide, sellSide, risk: distPct < 0.2 ? "MEDIUM" : "LOW" };
+}
+
+function detectSqueeze(atrRatio, volumeRatio, adx15) {
+  return atrRatio < 0.9 && volumeRatio < 0.98 && adx15 < 16;
+}
+
+function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move15, adx15, atrRatio, volumeRatio, distVwapPct, setup, oiConfirmation, structure, squeeze }) {
+  const trendingUp = trend1h.bias === "BULL" && trend15m.bias === "BULL" && structure.label === "BULLISH_STRUCTURE";
+  const trendingDown = trend1h.bias === "BEAR" && trend15m.bias === "BEAR" && structure.label === "BEARISH_STRUCTURE";
+  const highVolatility = atrRatio > 1.4 || Math.abs(move5) > 0.9;
+  const lowVolatility = atrRatio < 0.9 && Math.abs(move5) < 0.3;
+  const lateral = adx15 < 16 && !trendingUp && !trendingDown;
+  const accumulation = lateral && lowVolatility && rsi15 >= 45 && rsi15 <= 55 && volumeRatio > 0.95;
+  const distribution = lateral && lowVolatility && rsi15 >= 45 && rsi15 <= 55 && volumeRatio > 1.02 && move15 < 0;
+
+  let state = "AMBIGUOUS";
+  if (trendingUp && !lateral) state = "BULL_TREND";
+  else if (trendingDown && !lateral) state = "BEAR_TREND";
+  else if (lateral) state = "LATERAL_RANGE";
+  else if (highVolatility) state = "HIGH_VOLATILITY";
+  else if (lowVolatility) state = "LOW_VOLATILITY";
+  if (accumulation) state = "ACCUMULATION";
+  if (distribution) state = "DISTRIBUTION";
+
+  const evidence = [
+    trendingUp || trendingDown ? 1 : 0,
+    adx15 >= 18 ? 1 : 0,
+    atrRatio >= 0.9 && atrRatio <= 1.8 ? 1 : 0,
+    volumeRatio >= 0.98 ? 1 : 0,
+    Math.abs(distVwapPct) <= 1.3 ? 1 : 0,
+    oiConfirmation !== "UNWIND" ? 1 : 0,
+    setup.type !== "NONE" ? 1 : 0,
+    !squeeze ? 1 : 0,
+    rsi1h > 48 && rsi1h < 52 ? 0.5 : 1
+  ];
+  const confidence = Number((sma(evidence) * 100).toFixed(2));
+  const ambiguous = confidence < 58 || state === "AMBIGUOUS";
+
+  return {
+    state: ambiguous ? "AMBIGUOUS" : state,
+    confidence,
+    tags: {
+      trendingUp,
+      trendingDown,
+      lateral,
+      highVolatility,
+      lowVolatility,
+      accumulation,
+      distribution,
+      squeeze
+    }
+  };
+}
+
+function buildEdgeScore({ score, edge, probabilities, volumeRatio, atrRatio, adx15, setup, liquidity, marketState, drawdownRisk = 0 }) {
+  const estimatedSuccessProb = Math.max(num(probabilities?.longProb), num(probabilities?.shortProb));
+  const setupScore = setup.type === "NONE" ? 0 : setup.type.startsWith("PULLBACK") ? 12 : 8;
+  const momentumAligned = adx15 >= 18 ? 10 : adx15 >= 14 ? 6 : 2;
+  const volContext = atrRatio >= 0.95 && atrRatio <= 1.9 ? 10 : 4;
+  const volumeContext = volumeRatio >= 1 ? 10 : 5;
+  const liquidityScore = liquidity?.risk === "LOW" ? 8 : 4;
+  const marketClarity = marketState.state === "AMBIGUOUS" ? 0 : Math.min(marketState.confidence / 10, 10);
+
+  const edgeScoreRaw =
+    (score * 0.35) +
+    (edge * 0.55) +
+    (estimatedSuccessProb * 0.35) +
+    setupScore +
+    momentumAligned +
+    volContext +
+    volumeContext +
+    liquidityScore +
+    marketClarity -
+    drawdownRisk;
+
+  return {
+    edgeScore: Number(clamp(edgeScoreRaw, 0, 100).toFixed(2)),
+    estimatedSuccessProb: Number(estimatedSuccessProb.toFixed(1))
+  };
+}
+
 function classifyConfidence(score, edge) {
   if (score >= 75 && edge >= 18) return "HIGH";
   if (score >= 58 && edge >= 8) return "MEDIUM";
@@ -671,7 +760,10 @@ function shouldSkipTrade({
   setup,
   distEma20_5,
   candleConfirm,
-  regime
+  regime,
+  marketState,
+  edgeScore,
+  estimatedSuccessProb
 }) {
   const alignedBull = trend1h.bias === "BULL" && trend15m.bias === "BULL";
   const alignedBear = trend1h.bias === "BEAR" && trend15m.bias === "BEAR";
@@ -695,6 +787,12 @@ function shouldSkipTrade({
   if (overextended) return true;
   if (noSetup) return true;
   if (regime === "TRANSITION" && score < 52) return true;
+  if (config.strategy?.sniperMode && (score < 58 || edge < 10)) return true;
+
+  if (marketState?.state === "AMBIGUOUS") return true;
+  if (num(edgeScore) < num(config.strategy?.edgeScoreThreshold || 62)) return true;
+  if (num(estimatedSuccessProb) < num(config.strategy?.minEstimatedSuccessProb || 55)) return true;
+
 
   if (!alignedBull && !alignedBear && !oneSideAligned) return true;
 
@@ -804,6 +902,29 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     volumeRatio,
     adx15
   });
+  const vwap5 = calcVwap(c5.slice(-60));
+  const markPrice = num(ticker.mark_price || ticker.last);
+  const distVwapPct = vwap5 > 0 ? ((markPrice - vwap5) / vwap5) * 100 : 0;
+  const structure = detectStructure(c15, 18);
+  const liquidityZones = detectLiquidityZones(c15, 24);
+  const squeeze = detectSqueeze(atrRatio, volumeRatio, adx15);
+  const marketState = analyzeMarketState({
+    trend1h,
+    trend15m,
+    rsi5,
+    rsi15,
+    rsi1h,
+    move5,
+    move15,
+    adx15,
+    atrRatio,
+    volumeRatio,
+    distVwapPct,
+    setup,
+    oiConfirmation,
+    structure,
+    squeeze
+  });
 
   const scoreTrendAlignment =
     trend1h.bias === trend15m.bias && trend1h.bias !== "NEUTRAL"
@@ -893,6 +1014,17 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
   });
 
   const edge = Math.abs(probabilities.longProb - probabilities.shortProb);
+  const quant = buildEdgeScore({
+    score,
+    edge,
+    probabilities,
+    volumeRatio,
+    atrRatio,
+    adx15,
+    setup,
+    liquidity: liquidityZones,
+    marketState
+  });
 
   let suggestedAction = "NO_TRADE";
 
@@ -912,7 +1044,10 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       setup,
       distEma20_5,
       candleConfirm,
-      regime: initialRegime
+      regime: initialRegime,
+      marketState,
+      edgeScore: quant.edgeScore,
+      estimatedSuccessProb: quant.estimatedSuccessProb
     })
   ) {
     suggestedAction =
@@ -939,6 +1074,10 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     suggestedAction,
     probabilities,
     regime: initialRegime,
+    marketState: marketState.state,
+    marketStateConfidence: marketState.confidence,
+    edgeScore: quant.edgeScore,
+    estimatedSuccessProb: quant.estimatedSuccessProb,
     mtf: {
       bias1h: trend1h.bias,
       bias15m: trend15m.bias,
@@ -971,7 +1110,14 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       bodyStrength5: Number(candleConfirm.bodyStrength.toFixed(3)),
       upperWick5: Number(candleConfirm.upperWick.toFixed(3)),
       lowerWick5: Number(candleConfirm.lowerWick.toFixed(3)),
-      markPrice: Number(num(ticker.mark_price || ticker.last).toFixed(8))
+      markPrice: Number(num(ticker.mark_price || ticker.last).toFixed(8)),
+      vwap5: Number(vwap5.toFixed(8)),
+      distVwapPct: Number(distVwapPct.toFixed(3)),
+      squeeze: Boolean(squeeze),
+      structure: structure.label,
+      structureConfidence: Number(structure.confidence.toFixed(3)),
+      liquidityBuySide: Number(liquidityZones.buySide.toFixed(8)),
+      liquiditySellSide: Number(liquidityZones.sellSide.toFixed(8))
     },
     setup: {
       type: setup.type,
@@ -990,6 +1136,21 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       trend1hBias: trend1h.bias,
       ema20SlopePct15m: Number(trend15m.ema20SlopePct.toFixed(4)),
       ema20SlopePct1h: Number(trend1h.ema20SlopePct.toFixed(4))
+    },
+    reasoning: {
+      summary: suggestedAction === "NO_TRADE"
+        ? `Mercado ${marketState.state} con confianza ${marketState.confidence}%. Edge insuficiente o condiciones incompletas.`
+        : `Entrada ${suggestedAction} propuesta por confluencia de tendencia, setup y probabilidad estadística.`,
+      waitingFor: [
+        marketState.state === "AMBIGUOUS" ? "Claridad de estado de mercado" : null,
+        quant.edgeScore < num(config.strategy?.edgeScoreThreshold || 62) ? "EDGE_SCORE por encima del umbral" : null,
+        quant.estimatedSuccessProb < num(config.strategy?.minEstimatedSuccessProb || 55) ? "Probabilidad estimada > 55%" : null
+      ].filter(Boolean),
+      nextLevels: {
+        liquidityBuySide: Number(liquidityZones.buySide.toFixed(8)),
+        liquiditySellSide: Number(liquidityZones.sellSide.toFixed(8)),
+        vwap5: Number(vwap5.toFixed(8))
+      }
     },
     components: {
       scoreTrendAlignment: Number(scoreTrendAlignment.toFixed(2)),

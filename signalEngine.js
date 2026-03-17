@@ -527,6 +527,73 @@ function detectLiquidityZones(candles, lookback = 24) {
   return { buySide, sellSide, risk: distPct < 0.2 ? "MEDIUM" : "LOW" };
 }
 
+function analyzeEntryZoneFocus({ candles, direction, markPrice, liquidityZones, atr15 }) {
+  if (!candles || candles.length < 12) {
+    return {
+      enabled: false,
+      reason: "NO_CANDLES",
+      zoneType: "NONE",
+      zonePrice: 0,
+      pullbackDepthPct: 0,
+      zoneStrength: 0
+    };
+  }
+
+  const recent = candles.slice(-12);
+  const wickThreshold = 0.45;
+  const atrUnit = Math.max(num(atr15), num(markPrice) * 0.0018);
+  const zonePadding = atrUnit * 0.08;
+
+  const resistanceWicks = recent
+    .filter((c) => upperWickRatio(c) >= wickThreshold)
+    .map((c) => num(c.high));
+
+  const supportWicks = recent
+    .filter((c) => lowerWickRatio(c) >= wickThreshold)
+    .map((c) => num(c.low));
+
+  const avgResistanceWick = resistanceWicks.length ? sma(resistanceWicks) : 0;
+  const avgSupportWick = supportWicks.length ? sma(supportWicks) : 0;
+
+  const liquidityResistance = num(liquidityZones?.buySide);
+  const liquiditySupport = num(liquidityZones?.sellSide);
+
+  const resistanceCandidates = [avgResistanceWick, liquidityResistance].filter((x) => x > 0);
+  const supportCandidates = [avgSupportWick, liquiditySupport].filter((x) => x > 0);
+
+  const mergedResistance = resistanceCandidates.length ? sma(resistanceCandidates) : 0;
+  const mergedSupport = supportCandidates.length ? sma(supportCandidates) : 0;
+
+  const isLong = direction === "LONG";
+  const zoneRaw = isLong ? mergedSupport : mergedResistance;
+  const zonePrice = zoneRaw > 0
+    ? (isLong ? zoneRaw + zonePadding : zoneRaw - zonePadding)
+    : 0;
+
+  const safeMark = num(markPrice);
+  const pullbackDepthPct = safeMark > 0 && zonePrice > 0
+    ? Math.abs(((safeMark - zonePrice) / safeMark) * 100)
+    : 0;
+
+  const wickStrength = isLong
+    ? clamp((supportWicks.length / 4) * 100, 0, 100)
+    : clamp((resistanceWicks.length / 4) * 100, 0, 100);
+  const liquidityStrength = zoneRaw > 0 ? 100 : 0;
+  const zoneStrength = Number((wickStrength * 0.6 + liquidityStrength * 0.4).toFixed(2));
+
+  return {
+    enabled: zonePrice > 0,
+    reason: zonePrice > 0 ? "WICK_LIQUIDITY_CONFLUENCE" : "NO_ZONE",
+    zoneType: isLong ? "SUPPORT" : "RESISTANCE",
+    zonePrice,
+    pullbackDepthPct,
+    zoneStrength,
+    wickTouches: isLong ? supportWicks.length : resistanceWicks.length,
+    wickAvg: isLong ? avgSupportWick : avgResistanceWick,
+    liquidityLevel: isLong ? liquiditySupport : liquidityResistance
+  };
+}
+
 function detectSqueeze(atrRatio, volumeRatio, adx15) {
   return atrRatio < 0.9 && volumeRatio < 0.98 && adx15 < 16;
 }
@@ -1151,6 +1218,14 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       probabilities.longProb >= probabilities.shortProb ? "LONG" : "SHORT";
   }
 
+  const entryZoneReview = analyzeEntryZoneFocus({
+    candles: c5,
+    direction: suggestedAction,
+    markPrice,
+    liquidityZones,
+    atr15
+  });
+
   const confidence =
     suggestedAction === "NO_TRADE"
       ? "LOW"
@@ -1229,6 +1304,18 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       pullbackShort: setup.pullbackShort,
       bullishCloseConfirmation: candleConfirm.bullishCloseConfirmation,
       bearishCloseConfirmation: candleConfirm.bearishCloseConfirmation
+    },
+    entryPlan: {
+      mode: "LIMIT_ON_INTEREST_ZONE",
+      enabled: Boolean(entryZoneReview.enabled && suggestedAction !== "NO_TRADE"),
+      zoneType: entryZoneReview.zoneType,
+      zonePrice: Number(num(entryZoneReview.zonePrice).toFixed(8)),
+      pullbackDepthPct: Number(num(entryZoneReview.pullbackDepthPct).toFixed(4)),
+      zoneStrength: Number(num(entryZoneReview.zoneStrength).toFixed(2)),
+      rationale: entryZoneReview.reason,
+      wickTouches: entryZoneReview.wickTouches,
+      wickAverage: Number(num(entryZoneReview.wickAvg).toFixed(8)),
+      liquidityLevel: Number(num(entryZoneReview.liquidityLevel).toFixed(8))
     },
     trend: {
       trend5mBias: trend5m.bias,

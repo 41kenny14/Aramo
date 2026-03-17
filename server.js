@@ -278,16 +278,29 @@ function buildLimitPlan({ signal, markPrice, marketInfo, direction }) {
   const offsetPct = Math.max(atrPct15 * 0.35, spreadBufferPct);
   const tick = numberOrZero(marketInfo?.tick_size || 0.0001);
 
-  const entryPrice = direction === "LONG"
+  const fallbackEntryPrice = direction === "LONG"
     ? fixedByTick(markPrice * (1 - offsetPct / 100), tick)
     : fixedByTick(markPrice * (1 + offsetPct / 100), tick);
+
+  const zoneEnabled = Boolean(signal?.entryPlan?.enabled);
+  const zonePrice = numberOrZero(signal?.entryPlan?.zonePrice);
+
+  const validZoneForLong = direction === "LONG" && zonePrice > 0 && zonePrice < markPrice;
+  const validZoneForShort = direction === "SHORT" && zonePrice > 0 && zonePrice > markPrice;
+  const useInterestZone = zoneEnabled && (validZoneForLong || validZoneForShort);
+
+  const rawEntryPrice = useInterestZone ? zonePrice : fallbackEntryPrice;
+  const entryPrice = fixedByTick(rawEntryPrice, tick);
 
   return {
     entryPrice,
     offsetPct: Number(offsetPct.toFixed(4)),
     atrPct15: Number(atrPct15.toFixed(4)),
     spreadBufferPct: Number(spreadBufferPct.toFixed(4)),
-    fillProbability: offsetPct <= atrPct15 ? 0.72 : 0.55
+    fillProbability: useInterestZone ? 0.78 : (offsetPct <= atrPct15 ? 0.72 : 0.55),
+    entrySource: useInterestZone ? "INTEREST_ZONE" : "ATR_OFFSET",
+    zoneType: signal?.entryPlan?.zoneType || "NONE",
+    zoneStrength: Number(numberOrZero(signal?.entryPlan?.zoneStrength).toFixed(2))
   };
 }
 

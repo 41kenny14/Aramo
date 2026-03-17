@@ -271,7 +271,7 @@ html, body {
 
 .toggle-btn {
   position: relative;
-  width: 38px;
+  width: auto;
   height: 22px;
   border-radius: 999px;
   background: var(--surface-3);
@@ -279,6 +279,8 @@ html, body {
   cursor: pointer;
   transition: background 0.2s ease;
   flex-shrink: 0;
+  color: #e6edf5;
+  padding: 0 10px;
 }
 
 .toggle-btn span {

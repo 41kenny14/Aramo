@@ -1000,10 +1000,18 @@ async function executeDraftTrade(draftId, meta = {}) {
     throw new Error(`El símbolo ${draft.symbol} está ocupado por otra operación.`);
   }
 
-  runtime.locked = true;
-  runtime.status = "executing_trade";
-  runtime.lastError = null;
-  runtime.lastAction = "execute_trade";
+  const useGlobalLock = !meta.allowConcurrent;
+
+  if (useGlobalLock && runtime.locked) {
+    throw new Error("Hay una operación en curso.");
+  }
+
+  if (useGlobalLock) {
+    runtime.locked = true;
+    runtime.status = "executing_trade";
+    runtime.lastError = null;
+    runtime.lastAction = "execute_trade";
+  }
 
   let orderPlaced = false;
 
@@ -1200,7 +1208,7 @@ async function executeDraftTrade(draftId, meta = {}) {
     draftTrades.delete(draftId);
     logTradeOpen(tradeRecord);
 
-    runtime.status = "running";
+    if (useGlobalLock) runtime.status = "running";
     runtime.lastAction = "trade_opened";
 
     return {
@@ -1221,13 +1229,13 @@ async function executeDraftTrade(draftId, meta = {}) {
       }
     }
 
-    runtime.status = "error";
+    if (useGlobalLock) runtime.status = "error";
     runtime.lastError = error.message;
     runtime.lastAction = "trade_open_failed";
     throw error;
   } finally {
     releaseSymbolLock(draft.symbol);
-    runtime.locked = false;
+    if (useGlobalLock) runtime.locked = false;
   }
 }
 
@@ -1362,6 +1370,10 @@ async function runAutoEntryCycle() {
   const findings = await scanMarketBatch(symbols, [...activeTrades.values()]);
   const balances = await getFuturesBalances();
   const availableUsdt = numberOrZero(balances?.USDT?.available);
+  const maxConcurrentTrades = numberOrZero(config.risk?.maxConcurrentTrades || 3);
+  const openTradesCount = [...activeTrades.values()].filter((t) => t.status === "OPEN").length;
+  let remainingSlots = Math.max(0, maxConcurrentTrades - openTradesCount);
+  const pendingExecutions = [];
 
   for (const item of findings) {
     try {
@@ -1377,6 +1389,8 @@ async function runAutoEntryCycle() {
 
       const findingCheck = validateScannerFindingForAuto(item, mode);
       if (!findingCheck.ok) continue;
+
+      if (remainingSlots <= 0) break;
 
       const active = [...activeTrades.values()];
       const gate = canOpenNewTrade({
@@ -1417,11 +1431,22 @@ async function runAutoEntryCycle() {
       });
 
       if (preview?.allowed && preview?.draftId) {
-        await executeDraftTrade(preview.draftId, { autoOpened: true });
+        remainingSlots -= 1;
+        pendingExecutions.push(
+          executeDraftTrade(preview.draftId, { autoOpened: true, allowConcurrent: true })
+            .catch((error) => {
+              remainingSlots += 1;
+              console.error("Auto entry execution error:", item.symbol, error.message);
+            })
+        );
       }
     } catch (error) {
       console.error("Auto entry error:", item.symbol, error.message);
     }
+  }
+
+  if (pendingExecutions.length > 0) {
+    await Promise.allSettled(pendingExecutions);
   }
 }
 

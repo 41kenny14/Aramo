@@ -531,7 +531,7 @@ function detectSqueeze(atrRatio, volumeRatio, adx15) {
   return atrRatio < 0.9 && volumeRatio < 0.98 && adx15 < 16;
 }
 
-function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move15, adx15, atrRatio, volumeRatio, distVwapPct, setup, oiConfirmation, structure, squeeze }) {
+function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move15, adx15, atrRatio, volumeRatio, distVwapPct, setup, oiConfirmation, fundingRate = null, structure, squeeze }) {
   const trendingUp = trend1h.bias === "BULL" && trend15m.bias === "BULL" && structure.label === "BULLISH_STRUCTURE";
   const trendingDown = trend1h.bias === "BEAR" && trend15m.bias === "BEAR" && structure.label === "BEARISH_STRUCTURE";
   const highVolatility = atrRatio > 1.4 || Math.abs(move5) > 0.9;
@@ -549,8 +549,16 @@ function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move
   if (accumulation) state = "ACCUMULATION";
   if (distribution) state = "DISTRIBUTION";
 
+  const fundingAbs = Math.abs(num(fundingRate));
+  const fundingNormal = fundingAbs === 0 || fundingAbs <= 0.08;
+  const momentumAligned =
+    (trendingUp && move15 > 0 && rsi15 >= 50 && rsi1h >= 50) ||
+    (trendingDown && move15 < 0 && rsi15 <= 50 && rsi1h <= 50) ||
+    (lateral && Math.abs(move15) < 0.45);
+  const structureClarity = structure.confidence >= 0.42;
+
   const evidence = [
-    trendingUp || trendingDown ? 1 : 0,
+    trendingUp || trendingDown || lateral ? 1 : 0,
     adx15 >= 18 ? 1 : 0,
     atrRatio >= 0.9 && atrRatio <= 1.8 ? 1 : 0,
     volumeRatio >= 0.98 ? 1 : 0,
@@ -558,10 +566,13 @@ function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move
     oiConfirmation !== "UNWIND" ? 1 : 0,
     setup.type !== "NONE" ? 1 : 0,
     !squeeze ? 1 : 0,
-    rsi1h > 48 && rsi1h < 52 ? 0.5 : 1
+    rsi1h > 48 && rsi1h < 52 ? 0.5 : 1,
+    fundingNormal ? 1 : 0.5,
+    momentumAligned ? 1 : 0,
+    structureClarity ? 1 : 0
   ];
   const confidence = Number((sma(evidence) * 100).toFixed(2));
-  const ambiguous = confidence < 58 || state === "AMBIGUOUS";
+  const ambiguous = confidence < 60 || state === "AMBIGUOUS";
 
   return {
     state: ambiguous ? "AMBIGUOUS" : state,
@@ -574,36 +585,97 @@ function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move
       lowVolatility,
       accumulation,
       distribution,
-      squeeze
+      squeeze,
+      momentumAligned,
+      structureClarity,
+      fundingNormal
     }
   };
 }
 
-function buildEdgeScore({ score, edge, probabilities, volumeRatio, atrRatio, adx15, setup, liquidity, marketState, drawdownRisk = 0 }) {
+function buildEdgeScore({
+  score,
+  edge,
+  probabilities,
+  volumeRatio,
+  atrRatio,
+  adx15,
+  setup,
+  liquidity,
+  marketState,
+  trend1h,
+  trend15m,
+  triggerBias,
+  move5,
+  move15,
+  rrEstimate,
+  distVwapPct,
+  oiConfirmation,
+  anomalyPenalty = 0,
+  drawdownRisk = 0
+}) {
   const estimatedSuccessProb = Math.max(num(probabilities?.longProb), num(probabilities?.shortProb));
-  const setupScore = setup.type === "NONE" ? 0 : setup.type.startsWith("PULLBACK") ? 12 : 8;
-  const momentumAligned = adx15 >= 18 ? 10 : adx15 >= 14 ? 6 : 2;
-  const volContext = atrRatio >= 0.95 && atrRatio <= 1.9 ? 10 : 4;
-  const volumeContext = volumeRatio >= 1 ? 10 : 5;
+  const setupScore = setup.type === "NONE" ? 0 : setup.type.startsWith("PULLBACK") ? 9 : 8;
+  const mtfDominant =
+    (trend1h.bias === trend15m.bias && trend1h.bias !== "NEUTRAL")
+      ? 12
+      : (trend1h.bias !== "NEUTRAL" || trend15m.bias !== "NEUTRAL") ? 6 : 2;
+  const momentumAligned =
+    (triggerBias === "BULL" && move5 > 0 && move15 > 0) ||
+    (triggerBias === "BEAR" && move5 < 0 && move15 < 0);
+  const momentumScore = momentumAligned ? (adx15 >= 18 ? 10 : 8) : (adx15 >= 18 ? 6 : 3);
+  const volContext = atrRatio >= 0.95 && atrRatio <= 1.9 ? 10 : atrRatio >= 0.85 && atrRatio <= 2.2 ? 6 : 2;
+  const volumeContext = volumeRatio >= 1.05 ? 10 : volumeRatio >= 0.98 ? 7 : 3;
   const liquidityScore = liquidity?.risk === "LOW" ? 8 : 4;
   const marketClarity = marketState.state === "AMBIGUOUS" ? 0 : Math.min(marketState.confidence / 10, 10);
+  const rrScore = rrEstimate >= 1.5 ? 10 : rrEstimate >= 1.2 ? 5 : 0;
+  const vwapRisk = Math.abs(distVwapPct) > 1.5 ? 3 : 0;
+  const oiPenalty = oiConfirmation === "UNWIND" ? 3 : 0;
 
   const edgeScoreRaw =
-    (score * 0.35) +
-    (edge * 0.55) +
-    (estimatedSuccessProb * 0.35) +
+    (score * 0.25) +
+    (edge * 0.5) +
+    (estimatedSuccessProb * 0.25) +
     setupScore +
-    momentumAligned +
+    mtfDominant +
+    momentumScore +
     volContext +
     volumeContext +
     liquidityScore +
+    rrScore +
     marketClarity -
-    drawdownRisk;
+    drawdownRisk -
+    anomalyPenalty -
+    vwapRisk -
+    oiPenalty;
 
   return {
     edgeScore: Number(clamp(edgeScoreRaw, 0, 100).toFixed(2)),
-    estimatedSuccessProb: Number(estimatedSuccessProb.toFixed(1))
+    estimatedSuccessProb: Number(estimatedSuccessProb.toFixed(1)),
+    rrEstimate: Number(rrEstimate.toFixed(2)),
+    anomalyPenalty: Number(anomalyPenalty.toFixed(2))
   };
+}
+
+function estimateRiskReward({ markPrice, setupType, atr15, liquidityZones }) {
+  const entry = num(markPrice);
+  const atr = Math.max(num(atr15), entry * 0.002);
+  if (entry <= 0 || atr <= 0) return 0;
+
+  const isLong = setupType.endsWith("LONG");
+  const stop = isLong ? entry - (atr * 1.1) : entry + (atr * 1.1);
+  const targetByAtr = isLong ? entry + (atr * 1.8) : entry - (atr * 1.8);
+  const targetByLiquidity = isLong
+    ? num(liquidityZones?.buySide)
+    : num(liquidityZones?.sellSide);
+  const target = targetByLiquidity > 0
+    ? (isLong ? Math.max(targetByAtr, targetByLiquidity) : Math.min(targetByAtr, targetByLiquidity))
+    : targetByAtr;
+
+  const risk = Math.abs(entry - stop);
+  const reward = Math.abs(target - entry);
+  if (risk <= 0 || reward <= 0) return 0;
+  return reward / risk;
 }
 
 function classifyConfidence(score, edge) {
@@ -763,7 +835,8 @@ function shouldSkipTrade({
   regime,
   marketState,
   edgeScore,
-  estimatedSuccessProb
+  estimatedSuccessProb,
+  rrEstimate
 }) {
   const alignedBull = trend1h.bias === "BULL" && trend15m.bias === "BULL";
   const alignedBear = trend1h.bias === "BEAR" && trend15m.bias === "BEAR";
@@ -792,6 +865,7 @@ function shouldSkipTrade({
   if (marketState?.state === "AMBIGUOUS") return true;
   if (num(edgeScore) < num(config.strategy?.edgeScoreThreshold || 62)) return true;
   if (num(estimatedSuccessProb) < num(config.strategy?.minEstimatedSuccessProb || 55)) return true;
+  if (num(rrEstimate) < 1.5) return true;
 
 
   if (!alignedBull && !alignedBear && !oneSideAligned) return true;
@@ -853,6 +927,7 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
   ]);
 
   const ticker = Array.isArray(tickerList) ? tickerList[0] : null;
+  const fundingRate = num(ticker?.funding_rate);
   if (!ticker) throw new Error(`No se pudo obtener ticker para ${market}`);
 
   const c5 = toClosedCandles(kline5, triggerPeriod);
@@ -917,6 +992,7 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     move5,
     move15,
     adx15,
+    fundingRate,
     atrRatio,
     volumeRatio,
     distVwapPct,
@@ -1014,6 +1090,17 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
   });
 
   const edge = Math.abs(probabilities.longProb - probabilities.shortProb);
+  const rrEstimate = estimateRiskReward({
+    markPrice,
+    setupType: setup.type,
+    atr15,
+    liquidityZones
+  });
+  const anomalyPenalty =
+    (squeeze ? 3 : 0) +
+    (Math.abs(move5) > 1.8 ? 4 : 0) +
+    (Math.abs(fundingRate) > 0.12 ? 3 : 0);
+
   const quant = buildEdgeScore({
     score,
     edge,
@@ -1023,7 +1110,16 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     adx15,
     setup,
     liquidity: liquidityZones,
-    marketState
+    marketState,
+    trend1h,
+    trend15m,
+    triggerBias,
+    move5,
+    move15,
+    rrEstimate,
+    distVwapPct,
+    oiConfirmation,
+    anomalyPenalty
   });
 
   let suggestedAction = "NO_TRADE";
@@ -1047,7 +1143,8 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       regime: initialRegime,
       marketState,
       edgeScore: quant.edgeScore,
-      estimatedSuccessProb: quant.estimatedSuccessProb
+      estimatedSuccessProb: quant.estimatedSuccessProb,
+      rrEstimate: quant.rrEstimate
     })
   ) {
     suggestedAction =
@@ -1076,8 +1173,10 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
     regime: initialRegime,
     marketState: marketState.state,
     marketStateConfidence: marketState.confidence,
+    marketStateTags: marketState.tags,
     edgeScore: quant.edgeScore,
     estimatedSuccessProb: quant.estimatedSuccessProb,
+    rrEstimate: quant.rrEstimate,
     mtf: {
       bias1h: trend1h.bias,
       bias15m: trend15m.bias,
@@ -1097,6 +1196,7 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
       oiChangePct: Number(oi.changePct.toFixed(3)),
       oiPoints: oi.points,
       oiConfirmation,
+      fundingRate: Number(fundingRate.toFixed(6)),
       rsi5: Number(rsi5.toFixed(2)),
       rsi15: Number(rsi15.toFixed(2)),
       rsi1h: Number(rsi1h.toFixed(2)),
@@ -1142,8 +1242,9 @@ export async function getSignalForSymbol(symbol, triggerPeriod = "5min") {
         ? `Mercado ${marketState.state} con confianza ${marketState.confidence}%. Edge insuficiente o condiciones incompletas.`
         : `Entrada ${suggestedAction} propuesta por confluencia de tendencia, setup y probabilidad estadística.`,
       waitingFor: [
+        quant.rrEstimate < 1.5 ? "Riesgo/beneficio mínimo 1:1.5" : null,
         marketState.state === "AMBIGUOUS" ? "Claridad de estado de mercado" : null,
-        quant.edgeScore < num(config.strategy?.edgeScoreThreshold || 62) ? "EDGE_SCORE por encima del umbral" : null,
+        quant.edgeScore < num(config.strategy?.edgeScoreThreshold || 62) ? "EDGE_SCORE por debajo del umbral" : null,
         quant.estimatedSuccessProb < num(config.strategy?.minEstimatedSuccessProb || 55) ? "Probabilidad estimada > 55%" : null
       ].filter(Boolean),
       nextLevels: {

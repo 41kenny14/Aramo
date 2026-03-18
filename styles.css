@@ -1070,3 +1070,18 @@ pre, .stats-pre {
   .auto-chip { display: none; }
   .panel-actions { flex-direction: column; }
 }
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.btn-secondary:hover {
+  border-color: var(--border-2);
+  background: #1a2336;
+}
+
+.btn-warning {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: #fbbf24;
+}

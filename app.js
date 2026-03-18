@@ -1,5 +1,7 @@
 let allSymbols = [];
 let currentSignal = null;
+let manualPreviewDirectionMode = "ORIGINAL";
+let reverseModeEnabled = false;
 
 const loading = {
   health: false,
@@ -321,6 +323,7 @@ function draftCardHtml(draft) {
         <div class="info-row"><span>Entrada ref.</span><strong>${escapeHtml(t.entryReference)}</strong></div>
         <div class="info-row"><span>SL</span><strong>${escapeHtml(t.stopLoss)}</strong></div>
         <div class="info-row"><span>TP</span><strong>${escapeHtml(t.takeProfit)}</strong></div>
+        <div class="info-row"><span>Modo</span><strong>${escapeHtml(t.directionMode || "ORIGINAL")}</strong></div>
       </div>
 
       <div class="card-actions">
@@ -594,7 +597,8 @@ async function previewTrade() {
     percent: Number(qs("percent")?.value || 20),
     stopLossPct: Number(qs("sl")?.value || 0.6),
     takeProfitPct: Number(qs("tp")?.value || 0.8),
-    signalPeriod: qs("signalPeriod")?.value || "5min"
+    signalPeriod: qs("signalPeriod")?.value || "5min",
+    directionMode: manualPreviewDirectionMode
   };
 
   try {
@@ -674,6 +678,47 @@ function renderAutoStatus(enabled) {
   }
 }
 
+function renderManualPreviewMode() {
+  const btn = qs("previewDirectionBtn");
+  if (!btn) return;
+
+  const inverted = manualPreviewDirectionMode === "INVERTED";
+  btn.textContent = inverted ? "Original" : "Invertir";
+  btn.classList.toggle("btn-warning", inverted);
+}
+
+function renderReverseMode(enabled) {
+  reverseModeEnabled = Boolean(enabled);
+  const btn = qs("reverseModeBtn");
+  if (!btn) return;
+
+  btn.textContent = reverseModeEnabled ? "Bot Invertido ON" : "Bot Invertido OFF";
+  btn.classList.toggle("btn-warning", reverseModeEnabled);
+}
+
+async function togglePreviewDirectionMode() {
+  manualPreviewDirectionMode = manualPreviewDirectionMode === "INVERTED" ? "ORIGINAL" : "INVERTED";
+  renderManualPreviewMode();
+}
+
+async function toggleReverseMode() {
+  try {
+    await withButtonLock("reverseModeBtn", async () => {
+      const data = await api("/api/reverse-mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !reverseModeEnabled })
+      });
+
+      renderReverseMode(Boolean(data.reverseMode));
+      setResult(data.reverseMode ? "Modo invertido activado para el bot." : "Modo original restaurado para el bot.");
+      await loadStatus();
+    });
+  } catch (e) {
+    setResult(e.message, true);
+  }
+}
+
 function autoOpenedCardHtml(item) {
   return `
     <div class="list-card">
@@ -714,6 +759,7 @@ async function loadAutoStatus() {
     try {
       const data = await api("/api/auto-status");
       renderAutoStatus(Boolean(data.enabled));
+      renderReverseMode(Boolean(data.reverseMode));
     } catch (e) {
       console.error("Auto status error:", e.message);
     }
@@ -755,6 +801,7 @@ async function toggleAutoTrading() {
       });
 
       renderAutoStatus(Boolean(data.enabled));
+      renderReverseMode(Boolean(data.reverseMode));
       setResult(data.enabled ? "Auto trading activado." : "Auto trading desactivado.");
       await loadStatus();
     });
@@ -829,6 +876,8 @@ qs("symbol")?.addEventListener("change", async () => {
 });
 
 qs("autoToggleBtn")?.addEventListener("click", toggleAutoTrading);
+qs("previewDirectionBtn")?.addEventListener("click", togglePreviewDirectionMode);
+qs("reverseModeBtn")?.addEventListener("click", toggleReverseMode);
 qs("signalPeriod")?.addEventListener("change", loadSignal);
 qs("gridModeBtn")?.addEventListener("click", toggleGridMode);
 qs("sniperModeBtn")?.addEventListener("click", toggleSniperMode);
@@ -845,6 +894,8 @@ qs("reloadSymbolsBtn")?.addEventListener("click", async () => {
     setResult(e.message, true);
   }
 });
+
+renderManualPreviewMode();
 
 (async function init() {
   try {

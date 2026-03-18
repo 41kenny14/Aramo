@@ -40,6 +40,7 @@ const runtime = {
   lastAction: null,
   marginMode: config.coinex.defaultMarginMode,
   autoEnabled: Boolean(config.auto.enabled),
+  reverseMode: false,
   accountState: {
     lossStreak: 0,
     wins: 0,
@@ -61,6 +62,20 @@ const runtime = {
     autoExecutionMode: "SNIPER"
   }
 };
+
+function flipDirection(direction) {
+  if (direction === "LONG") return "SHORT";
+  if (direction === "SHORT") return "LONG";
+  return direction;
+}
+
+function invertProbabilities(probabilities = {}) {
+  return {
+    ...probabilities,
+    longProb: numberOrZero(probabilities.shortProb),
+    shortProb: numberOrZero(probabilities.longProb)
+  };
+}
 
 const marketsCache = {
   fetchedAt: 0,
@@ -592,6 +607,7 @@ function validatePreviewPayload(body, allowedSymbols) {
   const stopLossPct = Number(body.stopLossPct);
   const takeProfitPct = Number(body.takeProfitPct);
   const signalPeriod = String(body.signalPeriod || "5min");
+  const directionMode = String(body.directionMode || "AUTO").toUpperCase();
 
   if (!allowedSymbols.includes(symbol)) {
     throw new Error("Símbolo inválido o no disponible en USDT.");
@@ -607,7 +623,12 @@ function validatePreviewPayload(body, allowedSymbols) {
 
   validateSignalPeriod(signalPeriod);
 
-  return { symbol, percent, stopLossPct, takeProfitPct, signalPeriod };
+  const validDirectionModes = new Set(["AUTO", "ORIGINAL", "INVERTED"]);
+  if (!validDirectionModes.has(directionMode)) {
+    throw new Error("Modo de dirección inválido.");
+  }
+
+  return { symbol, percent, stopLossPct, takeProfitPct, signalPeriod, directionMode };
 }
 
 function validateSignalForEntry(signal) {
@@ -848,7 +869,7 @@ async function waitForPosition({ market, retries = 12, delayMs = 500, attempts, 
 async function buildTradePreview(params) {
   cleanupExpiredDrafts();
 
-  const { symbol, percent, stopLossPct, takeProfitPct, signalPeriod } = params;
+  const { symbol, percent, stopLossPct, takeProfitPct, signalPeriod, directionMode = "AUTO" } = params;
   const market = buildMarket(symbol);
 
   const active = [...activeTrades.values()];
@@ -932,10 +953,18 @@ async function buildTradePreview(params) {
     throw new Error("Mercado ambiguo: no se permite entrada.");
   }
 
-  const direction = signal.suggestedAction;
-  if (direction !== "LONG" && direction !== "SHORT") {
-    throw new Error(`Dirección inválida de señal: ${direction}`);
+  const signalDirection = signal.suggestedAction;
+  if (signalDirection !== "LONG" && signalDirection !== "SHORT") {
+    throw new Error(`Dirección inválida de señal: ${signalDirection}`);
   }
+
+  const effectiveDirectionMode = directionMode === "AUTO"
+    ? (runtime.reverseMode ? "INVERTED" : "ORIGINAL")
+    : directionMode;
+
+  const direction = effectiveDirectionMode === "INVERTED"
+    ? flipDirection(signalDirection)
+    : signalDirection;
 
   const side = direction === "LONG" ? "buy" : "sell";
 
@@ -965,7 +994,9 @@ async function buildTradePreview(params) {
       score: signal.score,
       edge,
       regime: signal.regime,
-      probabilities: signal.probabilities,
+      probabilities: effectiveDirectionMode === "INVERTED" ? invertProbabilities(signal.probabilities) : signal.probabilities,
+      signalDirection,
+      directionMode: effectiveDirectionMode,
       setupType: signal?.setup?.type || "NONE",
       adx15: numberOrZero(signal?.metrics?.adx15),
       distEma20_5: numberOrZero(signal?.metrics?.distEma20_5),
@@ -1042,9 +1073,13 @@ async function executeDraftTrade(draftId, meta = {}) {
 
     const { edge: freshEdge } = validateSignalForEntry(freshSignal);
 
-    if (freshSignal.suggestedAction !== draft.direction) {
+    const expectedDirection = draft.directionMode === "INVERTED"
+      ? flipDirection(freshSignal.suggestedAction)
+      : freshSignal.suggestedAction;
+
+    if (expectedDirection !== draft.direction) {
       throw new Error(
-        `La dirección cambió antes de ejecutar (${draft.direction} -> ${freshSignal.suggestedAction}).`
+        `La dirección cambió antes de ejecutar (${draft.direction} -> ${expectedDirection}).`
       );
     }
 
@@ -1495,7 +1530,8 @@ app.get("/api/health", async (_req, res) => {
     autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
     guardrailReason: runtime.accountState.guardrailReason,
     autoPauseUntil: runtime.accountState.autoPauseUntil,
-    autoExecutionMode: runtime.accountState.autoExecutionMode
+    autoExecutionMode: runtime.accountState.autoExecutionMode,
+    reverseMode: runtime.reverseMode
   });
 });
 
@@ -1615,7 +1651,8 @@ app.get("/api/auto-status", async (_req, res) => {
     autoTakeProfitRoe: config.auto.autoTakeProfitRoe,
     guardrailReason: runtime.accountState.guardrailReason,
     autoPauseUntil: runtime.accountState.autoPauseUntil,
-    autoExecutionMode: runtime.accountState.autoExecutionMode
+    autoExecutionMode: runtime.accountState.autoExecutionMode,
+    reverseMode: runtime.reverseMode
   });
 });
 
@@ -1634,8 +1671,21 @@ app.post("/api/auto-toggle", async (req, res) => {
 
   res.json({
     ok: true,
-    enabled: runtime.autoEnabled
+    enabled: runtime.autoEnabled,
+    reverseMode: runtime.reverseMode
   });
+});
+
+app.post("/api/reverse-mode", (req, res) => {
+  try {
+    const enabled = Boolean(req.body?.enabled);
+    runtime.reverseMode = enabled;
+    runtime.lastAction = enabled ? "reverse_mode_on" : "reverse_mode_off";
+
+    res.json({ ok: true, reverseMode: runtime.reverseMode });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 app.get("/api/trades", async (_req, res) => {
@@ -1712,7 +1762,7 @@ app.get("/api/status", async (_req, res) => {
         guardrailReason: runtime.accountState.guardrailReason,
         autoPauseUntil: runtime.accountState.autoPauseUntil,
         autoExecutionMode: runtime.accountState.autoExecutionMode,
-    autoExecutionMode: runtime.accountState.autoExecutionMode
+        reverseMode: runtime.reverseMode
       }
     });
   } catch (error) {

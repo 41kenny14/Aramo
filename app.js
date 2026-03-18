@@ -162,6 +162,9 @@ async function loadStatistics() {
       setText("statsSignalsTotal", formatNum(signalSummary.total_signals, 0));
       setText("statsAvgSignalScore", formatNum(signalSummary.avg_score, 2));
 
+      const feedbackSummary = data.feedbackSummary || {};
+      const feedbackOutcomes = data.feedbackOutcomes || [];
+
       setHTML("statsBestTrades", renderStatsTradeList(data.bestTrades || []));
       setHTML("statsWorstTrades", renderStatsTradeList(data.worstTrades || []));
       setHTML("statsLongestTrades", renderStatsTradeList(data.longestTrades || []));
@@ -175,7 +178,11 @@ async function loadStatistics() {
               simbolo: data.symbol || "ALL"
             },
             closeReasons: data.closeReasons || [],
-            topSymbols: data.topSymbols || []
+            topSymbols: data.topSymbols || [],
+            feedback: {
+              summary: feedbackSummary,
+              outcomes: feedbackOutcomes
+            }
           },
           null,
           2
@@ -476,6 +483,8 @@ function tradeCardHtml(trade) {
       </div>
 
       <div class="card-actions">
+        <button onclick="sendBotFeedback('${escapeHtml(trade.tradeId)}', '${escapeHtml(trade.symbol)}', 5, 'GOOD_SIGNAL')" class="btn btn-secondary">👍 Útil</button>
+        <button onclick="sendBotFeedback('${escapeHtml(trade.tradeId)}', '${escapeHtml(trade.symbol)}', 1, 'BAD_SIGNAL')" class="btn btn-warning">👎 Malo</button>
         <button onclick="closeTrade('${escapeHtml(trade.tradeId)}')" class="btn btn-danger">Cerrar</button>
       </div>
     </div>
@@ -753,6 +762,33 @@ async function cancelDraft(draftId) {
   }
 }
 
+async function sendBotFeedback(tradeId, symbol, rating, outcome) {
+  try {
+    await api("/api/bot-feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tradeId,
+        symbol,
+        rating,
+        source: "USER",
+        eventType: "TRADE_REVIEW",
+        outcome,
+        notes: `Feedback rápido desde dashboard (${outcome}).`,
+        payload: {
+          section: "trades",
+          createdAt: Date.now()
+        }
+      })
+    });
+
+    setResult("Feedback guardado. Se usará para mejorar estadísticas y decisiones.");
+    await loadStatistics();
+  } catch (e) {
+    setResult(`No se pudo guardar feedback: ${e.message}`, true);
+  }
+}
+
 async function closeTrade(tradeId) {
   try {
     const data = await api(`/api/close-trade/${encodeURIComponent(tradeId)}`, {
@@ -966,6 +1002,7 @@ async function resetBotState() {
 window.executeDraft = executeDraft;
 window.cancelDraft = cancelDraft;
 window.closeTrade = closeTrade;
+window.sendBotFeedback = sendBotFeedback;
 window.focusScannerSymbol = focusScannerSymbol;
 
 qs("previewBtn")?.addEventListener("click", previewTrade);

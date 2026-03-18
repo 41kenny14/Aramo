@@ -25,7 +25,7 @@ import {
   isMemeSymbol,
   getSignalEdge
 } from "./riskEngine.js";
-import { logTradeOpen, logTradeClose, logAdvice, getOpenTrades, getTradingStatistics } from "./db.js";
+import { logTradeOpen, logTradeClose, logAdvice, getOpenTrades, getTradingStatistics, logBotFeedback } from "./db.js";
 
 const app = express();
 
@@ -1703,6 +1703,38 @@ app.get("/api/statistics", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/bot-feedback", async (req, res) => {
+  try {
+    const symbol = String(req.body?.symbol || "").trim().toUpperCase();
+    if (!symbol) {
+      throw new Error("symbol es obligatorio.");
+    }
+
+    const rating = req.body?.rating;
+    const tradeId = req.body?.tradeId ? String(req.body.tradeId) : null;
+    const source = String(req.body?.source || "USER").trim().toUpperCase();
+    const eventType = String(req.body?.eventType || "MANUAL_REVIEW").trim().toUpperCase();
+    const outcome = req.body?.outcome ? String(req.body.outcome).trim().toUpperCase() : null;
+    const notes = req.body?.notes ? String(req.body.notes) : null;
+    const payload = req.body?.payload && typeof req.body.payload === "object" ? req.body.payload : {};
+
+    logBotFeedback({
+      tradeId,
+      symbol,
+      source,
+      eventType,
+      rating,
+      outcome,
+      notes,
+      payload
+    });
+
+    res.json({ ok: true, message: "Feedback guardado." });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
   }
 });
 

@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS optimization_logs (
   payload_json TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bot_feedback_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_id TEXT,
+  symbol TEXT NOT NULL,
+  source TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  rating INTEGER,
+  outcome TEXT,
+  notes TEXT,
+  payload_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `);
 
 safeAlter(`ALTER TABLE trade_logs ADD COLUMN details_json TEXT`);
@@ -289,6 +302,37 @@ WHERE created_at >= @since
   AND (@symbol = '' OR symbol = @symbol)
 `);
 
+const insertBotFeedbackStmt = db.prepare(`
+INSERT INTO bot_feedback_logs (
+  trade_id, symbol, source, event_type, rating, outcome, notes, payload_json, created_at
+) VALUES (
+  @trade_id, @symbol, @source, @event_type, @rating, @outcome, @notes, @payload_json, @created_at
+)
+`);
+
+const getFeedbackSummaryStmt = db.prepare(`
+SELECT
+  COUNT(*) AS total_feedback,
+  ROUND(AVG(CASE WHEN rating IS NOT NULL THEN rating END), 2) AS avg_rating,
+  SUM(CASE WHEN rating >= 4 THEN 1 ELSE 0 END) AS positive_feedback,
+  SUM(CASE WHEN rating <= 2 THEN 1 ELSE 0 END) AS negative_feedback
+FROM bot_feedback_logs
+WHERE created_at >= @since
+  AND (@symbol = '' OR symbol = @symbol)
+`);
+
+const getFeedbackOutcomesStmt = db.prepare(`
+SELECT
+  COALESCE(outcome, 'UNSPECIFIED') AS outcome,
+  COUNT(*) AS total
+FROM bot_feedback_logs
+WHERE created_at >= @since
+  AND (@symbol = '' OR symbol = @symbol)
+GROUP BY COALESCE(outcome, 'UNSPECIFIED')
+ORDER BY total DESC
+LIMIT 10
+`);
+
 export function logSignal(symbol, signal) {
   insertSignalStmt.run({
     symbol,
@@ -376,6 +420,30 @@ export function logAdvice(tradeId, advice) {
   });
 }
 
+export function logBotFeedback(entry = {}) {
+  const symbol = String(entry.symbol || "").trim().toUpperCase();
+  if (!symbol) {
+    throw new Error("symbol requerido para feedback.");
+  }
+
+  const ratingValue = Number(entry.rating);
+  const safeRating = Number.isFinite(ratingValue)
+    ? Math.max(1, Math.min(5, Math.round(ratingValue)))
+    : null;
+
+  insertBotFeedbackStmt.run({
+    trade_id: entry.tradeId ? String(entry.tradeId) : null,
+    symbol,
+    source: String(entry.source || "SYSTEM"),
+    event_type: String(entry.eventType || "GENERAL"),
+    rating: safeRating,
+    outcome: entry.outcome ? String(entry.outcome) : null,
+    notes: entry.notes ? String(entry.notes).slice(0, 4000) : null,
+    payload_json: JSON.stringify(entry.payload || {}),
+    created_at: Date.now()
+  });
+}
+
 export function getTradingStatistics({ days = 30, symbol = "", limit = 8 } = {}) {
   const parsedDays = Number.isFinite(Number(days)) ? Math.max(1, Math.min(365, Number(days))) : 30;
   const safeSymbol = String(symbol || "").trim().toUpperCase();
@@ -390,12 +458,16 @@ export function getTradingStatistics({ days = 30, symbol = "", limit = 8 } = {})
   const closeReasons = getCloseReasonsStmt.all(params);
   const topSymbols = getTopSymbolsStmt.all(params);
   const signalSummary = getSignalSummaryStmt.get(params);
+  const feedbackSummary = getFeedbackSummaryStmt.get(params);
+  const feedbackOutcomes = getFeedbackOutcomesStmt.all(params);
 
   return {
     windowDays: parsedDays,
     symbol: safeSymbol || null,
     summary,
     signalSummary,
+    feedbackSummary,
+    feedbackOutcomes,
     bestTrades,
     worstTrades,
     longestTrades,

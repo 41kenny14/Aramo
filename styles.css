@@ -739,6 +739,47 @@ html, body {
   background: rgba(239,68,68,0.2);
 }
 
+.btn-xs {
+  margin-top: 6px;
+  width: fit-content;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.reasoning-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reasoning-main {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.reasoning-why {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.reasoning-details summary {
+  cursor: pointer;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.reasoning-details .json-box {
+  margin-top: 8px;
+}
+
+.scanner-updated {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* Result box */
 .result-box {
   margin-top: 14px;

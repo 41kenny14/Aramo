@@ -17,6 +17,7 @@ import {
 import { getSignalForSymbol } from "./signalEngine.js";
 import { adviseTrade } from "./tradeAdvisor.js";
 import { scanMarketBatch, getScannerState } from "./scannerEngine.js";
+import { registerLearningTradeOpen, registerLearningTradeClose } from "./learningEngine.js";
 import {
   resolveLeverage,
   canOpenNewTrade,
@@ -1255,6 +1256,15 @@ async function executeDraftTrade(draftId, meta = {}) {
 
     draftTrades.delete(draftId);
     logTradeOpen(tradeRecord);
+    const learningOpen = registerLearningTradeOpen({
+      trade: tradeRecord,
+      signal: freshSignal,
+      learningMode: !runtime.autoEnabled,
+      mode: tradeRecord.autoOpened ? "automático" : "manual"
+    });
+    if (learningOpen?.feedback) {
+      console.log(learningOpen.feedback);
+    }
 
     if (useGlobalLock) runtime.status = "running";
     runtime.lastAction = "trade_opened";
@@ -1262,6 +1272,7 @@ async function executeDraftTrade(draftId, meta = {}) {
     return {
       ok: true,
       message: `${draft.direction} abierto correctamente.`,
+      learning: learningOpen || null,
       trade: tradeRecord,
       position
     };
@@ -1313,7 +1324,19 @@ async function closeTradeById(tradeId, reason = "AUTO_CLOSE") {
 
     activeTrades.delete(tradeId);
     markSymbolTradeClose(trade.symbol, pnlPct);
-    logTradeClose(tradeId, { closeReason: reason, closedPrice: numberOrZero(currentPosition?.mark_price || currentPosition?.last) });
+    const closedPrice = numberOrZero(currentPosition?.mark_price || currentPosition?.last);
+    logTradeClose(tradeId, { closeReason: reason, closedPrice });
+    const learningClose = registerLearningTradeClose({
+      trade,
+      closeReason: reason,
+      closedPrice,
+      pnlPct: trade.pnlPct,
+      closeTimestamp: trade.closedAt
+    });
+    if (learningClose?.feedback) {
+      console.log(learningClose.feedback);
+    }
+    trade.learningClose = learningClose || null;
 
     autoClosedTrades.unshift({
       tradeId: trade.tradeId,
@@ -1330,7 +1353,10 @@ async function closeTradeById(tradeId, reason = "AUTO_CLOSE") {
     }
 
     runtime.lastAction = "auto_close_trade";
-    return true;
+    return {
+      ok: true,
+      learning: trade.learningClose || null
+    };
   } finally {
     releaseSymbolLock(trade.symbol);
   }
@@ -1827,13 +1853,14 @@ app.post("/api/close-trade/:tradeId", async (req, res) => {
 
     if (!trade) throw new Error("Trade no encontrada.");
 
-    await closeTradeById(tradeId, "MANUAL_CLOSE");
+    const closeResult = await closeTradeById(tradeId, "MANUAL_CLOSE");
     runtime.lastAction = "manual_close_trade";
 
     res.json({
       ok: true,
       message: "Trade cerrada y removida del dashboard.",
-      tradeId
+      tradeId,
+      learning: closeResult?.learning || null
     });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });

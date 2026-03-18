@@ -2,6 +2,7 @@ let allSymbols = [];
 let currentSignal = null;
 let manualPreviewDirectionMode = "ORIGINAL";
 let reverseModeEnabled = false;
+const learningEvents = [];
 
 const loading = {
   health: false,
@@ -47,6 +48,60 @@ function setResult(message, isError = false) {
   box.classList.toggle("error", isError);
   box.classList.toggle("success", !isError);
   box.textContent = message;
+}
+
+function formatClock(ts = Date.now()) {
+  return new Date(ts).toLocaleTimeString("es-AR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function renderLearningFeed() {
+  const wrapper = qs("learningFeed");
+  const itemsNode = qs("learningFeedItems");
+  const metaNode = qs("learningFeedMeta");
+  if (!wrapper || !itemsNode || !metaNode) return;
+
+  if (!learningEvents.length) {
+    wrapper.classList.add("hidden");
+    itemsNode.innerHTML = "";
+    metaNode.textContent = "Sin eventos todavía";
+    return;
+  }
+
+  wrapper.classList.remove("hidden");
+  metaNode.textContent = `${learningEvents.length} evento(s) recientes`;
+  itemsNode.innerHTML = learningEvents
+    .slice(0, 6)
+    .map((event) => `
+      <article class="learning-item">
+        <div class="learning-item-top">
+          <span class="learning-item-type">${escapeHtml(event.type)}</span>
+          <span class="learning-item-time">${escapeHtml(formatClock(event.at))}</span>
+        </div>
+        <div class="learning-item-body">${escapeHtml(event.feedback || "Sin feedback")}</div>
+      </article>
+    `)
+    .join("");
+}
+
+function pushLearningFeedback(learning, typeLabel = "learning") {
+  const feedback = String(learning?.feedback || "").trim();
+  if (!feedback) return;
+
+  learningEvents.unshift({
+    at: Date.now(),
+    type: typeLabel,
+    feedback
+  });
+
+  if (learningEvents.length > 30) {
+    learningEvents.length = 30;
+  }
+
+  renderLearningFeed();
 }
 
 function formatNum(v, digits = 8) {
@@ -740,6 +795,7 @@ async function executeDraft(draftId) {
     });
 
     setResult(data.message || "Trade iniciada.");
+    pushLearningFeedback(data.learning, "apertura");
     await loadStatus();
     await loadBalances();
   } catch (e) {
@@ -796,6 +852,7 @@ async function closeTrade(tradeId) {
     });
 
     setResult(data.message || "Trade cerrada.");
+    pushLearningFeedback(data.learning, "cierre");
     await loadStatus();
     await loadBalances();
   } catch (e) {
@@ -1049,6 +1106,7 @@ qs("reloadSymbolsBtn")?.addEventListener("click", async () => {
 });
 
 renderManualPreviewMode();
+renderLearningFeed();
 
 (async function init() {
   try {

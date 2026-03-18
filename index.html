@@ -32,6 +32,10 @@
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.7"/><rect x="9" y="1" width="6" height="6" rx="1.5" fill="currentColor"/><rect x="1" y="9" width="6" height="6" rx="1.5" fill="currentColor"/><rect x="9" y="9" width="6" height="6" rx="1.5" fill="currentColor" opacity="0.7"/></svg>
           Dashboard
         </a>
+        <a href="#" class="nav-item" data-section="stats">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 12.5h12M4 11V7M8 11V4M12 11V6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Estadísticas
+        </a>
         <!-- <a href="#" class="nav-item" data-section="signal">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v12M4 5l4-3 4 3M4 11l4 3 4-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Señal
@@ -64,8 +68,8 @@
       <!-- TOP BAR -->
       <header class="topbar">
         <div class="topbar-left">
-          <h1 class="page-title">Dashboard</h1>
-          <span class="page-sub">Monitor general del sistema</span>
+          <h1 id="topbarTitle" class="page-title">Dashboard</h1>
+          <span id="topbarSubtitle" class="page-sub">Monitor general del sistema</span>
         </div>
 
         <div class="topbar-right">
@@ -99,6 +103,8 @@
 
       <!-- CONTENT SCROLL -->
       <div class="content-scroll">
+
+        <section id="dashboardSection" class="content-section active">
 
         <!-- SYSTEM STATUS CARDS -->
         <div class="kpi-row">
@@ -438,6 +444,61 @@
           </div>
 
         </div>
+        </section>
+
+        <section id="statsSection" class="content-section hidden">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Estadísticas de trading</h3>
+                <p>Resumen de db.js + coinex_pro_bot.db (incluye WAL/SHM)</p>
+              </div>
+              <div class="stats-filters">
+                <label for="statsDays">Ventana</label>
+                <select id="statsDays">
+                  <option value="7">7 días</option>
+                  <option value="30" selected>30 días</option>
+                  <option value="90">90 días</option>
+                  <option value="180">180 días</option>
+                </select>
+                <input id="statsSymbol" type="text" placeholder="Filtrar símbolo (ej: BTC)" />
+                <button id="refreshStatsBtn" class="btn btn-ghost">Actualizar estadísticas</button>
+              </div>
+            </div>
+
+            <div class="metrics-grid" id="statsSummaryGrid">
+              <div class="metric-tile"><span>Total trades</span><strong id="statsTotalTrades">—</strong></div>
+              <div class="metric-tile"><span>Cerrados</span><strong id="statsClosedTrades">—</strong></div>
+              <div class="metric-tile"><span>Abiertos</span><strong id="statsOpenTrades">—</strong></div>
+              <div class="metric-tile"><span>Win rate</span><strong id="statsWinRate">—</strong></div>
+              <div class="metric-tile"><span>Promedio PnL</span><strong id="statsAvgPnl">—</strong></div>
+              <div class="metric-tile"><span>Duración promedio</span><strong id="statsAvgDuration">—</strong></div>
+              <div class="metric-tile"><span>Mejor trade</span><strong id="statsBestTrade">—</strong></div>
+              <div class="metric-tile"><span>Peor trade</span><strong id="statsWorstTrade">—</strong></div>
+              <div class="metric-tile"><span>Señales (total)</span><strong id="statsSignalsTotal">—</strong></div>
+              <div class="metric-tile"><span>Score señal promedio</span><strong id="statsAvgSignalScore">—</strong></div>
+            </div>
+          </div>
+
+          <div class="grid-2col stats-grid">
+            <div class="panel">
+              <div class="panel-header"><h3>Mejores trades</h3></div>
+              <div id="statsBestTrades" class="list-stack compact"><div class="empty-state small">Sin datos.</div></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><h3>Peores trades</h3></div>
+              <div id="statsWorstTrades" class="list-stack compact"><div class="empty-state small">Sin datos.</div></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><h3>Trades más largos (tiempo)</h3></div>
+              <div id="statsLongestTrades" class="list-stack compact"><div class="empty-state small">Sin datos.</div></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><h3>Cierres por razón / Top símbolos</h3></div>
+              <pre id="statsExtraData" class="stats-pre">Sin estadísticas adicionales todavía.</pre>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   </div>
@@ -459,14 +520,6 @@
       });
     });
 
-    // Nav highlight
-    document.querySelectorAll('.nav-item').forEach(item => {
-      item.addEventListener('click', e => {
-        e.preventDefault();
-        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-        item.classList.add('active');
-      });
-    });
 
     // Refresh spin
     const refreshBtn = document.getElementById('refreshBtn');

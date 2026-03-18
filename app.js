@@ -10,7 +10,8 @@ const loading = {
   scanner: false,
   status: false,
   autoStatus: false,
-  autoHistory: false
+  autoHistory: false,
+  statistics: false
 };
 
 const queuedReload = {
@@ -20,7 +21,8 @@ const queuedReload = {
   scanner: false,
   status: false,
   autoStatus: false,
-  autoHistory: false
+  autoHistory: false,
+  statistics: false
 };
 
 function qs(id) {
@@ -81,6 +83,108 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+
+function formatPct(v, digits = 2) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  const prefix = n > 0 ? "+" : "";
+  return `${prefix}${n.toLocaleString("es-AR", { maximumFractionDigits: digits })}%`;
+}
+
+function renderStatsTradeList(items = []) {
+  if (!items.length) {
+    return `<div class="empty-state small">Sin datos.</div>`;
+  }
+
+  return items
+    .map((item) => `
+      <div class="list-card">
+        <div class="title-row">
+          <strong>${escapeHtml(item.symbol)} · ${escapeHtml(item.direction)}</strong>
+          <span class="tag">${escapeHtml(formatPct(item.pnl_pct, 3))}</span>
+        </div>
+        <div class="info-grid">
+          <div class="info-row"><span>Trade ID</span><strong>${escapeHtml(item.trade_id)}</strong></div>
+          <div class="info-row"><span>Leverage</span><strong>${escapeHtml(item.leverage)}x</strong></div>
+          <div class="info-row"><span>Duración</span><strong>${escapeHtml(formatNum(item.duration_min, 2))} min</strong></div>
+          <div class="info-row"><span>Cierre</span><strong>${escapeHtml(item.close_reason || "UNKNOWN")}</strong></div>
+        </div>
+      </div>
+    `)
+    .join("");
+}
+
+function setActiveSection(section) {
+  const isStats = section === "stats";
+
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.classList.toggle("active", item.dataset.section === section);
+  });
+
+  qs("dashboardSection")?.classList.toggle("hidden", isStats);
+  qs("dashboardSection")?.classList.toggle("active", !isStats);
+  qs("statsSection")?.classList.toggle("hidden", !isStats);
+  qs("statsSection")?.classList.toggle("active", isStats);
+
+  setText("topbarSubtitle", isStats ? "KPIs avanzados desde SQLite" : "Monitor general del sistema");
+  setText("topbarTitle", isStats ? "Estadísticas" : "Dashboard");
+
+  const topbarRight = document.querySelector(".topbar-right");
+  if (topbarRight) topbarRight.classList.toggle("hidden", isStats);
+
+  if (isStats) {
+    loadStatistics();
+  }
+}
+
+async function loadStatistics() {
+  await guardedLoad("statistics", async () => {
+    try {
+      const days = Number(qs("statsDays")?.value || 30);
+      const symbol = (qs("statsSymbol")?.value || "").trim().toUpperCase();
+      const params = new URLSearchParams({ days: String(days), limit: "8" });
+      if (symbol) params.set("symbol", symbol);
+
+      const data = await api(`/api/statistics?${params.toString()}`);
+      const summary = data.summary || {};
+      const signalSummary = data.signalSummary || {};
+
+      setText("statsTotalTrades", formatNum(summary.total, 0));
+      setText("statsClosedTrades", formatNum(summary.closed, 0));
+      setText("statsOpenTrades", formatNum(summary.open, 0));
+      setText("statsWinRate", formatPct(summary.win_rate, 2));
+      setText("statsAvgPnl", formatPct(summary.avg_pnl_pct, 3));
+      setText("statsAvgDuration", `${formatNum(summary.avg_duration_min, 2)} min`);
+      setText("statsBestTrade", formatPct(summary.best_pnl_pct, 3));
+      setText("statsWorstTrade", formatPct(summary.worst_pnl_pct, 3));
+      setText("statsSignalsTotal", formatNum(signalSummary.total_signals, 0));
+      setText("statsAvgSignalScore", formatNum(signalSummary.avg_score, 2));
+
+      setHTML("statsBestTrades", renderStatsTradeList(data.bestTrades || []));
+      setHTML("statsWorstTrades", renderStatsTradeList(data.worstTrades || []));
+      setHTML("statsLongestTrades", renderStatsTradeList(data.longestTrades || []));
+
+      setText(
+        "statsExtraData",
+        JSON.stringify(
+          {
+            filtros: {
+              dias: data.windowDays,
+              simbolo: data.symbol || "ALL"
+            },
+            closeReasons: data.closeReasons || [],
+            topSymbols: data.topSymbols || []
+          },
+          null,
+          2
+        )
+      );
+    } catch (e) {
+      setText("statsExtraData", `Error cargando estadísticas: ${e.message}`);
+    }
+  });
 }
 
 function getSignalEdge(signal) {
@@ -576,7 +680,8 @@ async function refreshAll() {
     loadScanner(),
     loadStatus(),
     loadAutoStatus(),
-    loadAutoHistory()
+    loadAutoHistory(),
+    loadStatistics()
   ]);
 }
 
@@ -883,6 +988,17 @@ qs("gridModeBtn")?.addEventListener("click", toggleGridMode);
 qs("sniperModeBtn")?.addEventListener("click", toggleSniperMode);
 qs("resetBotBtn")?.addEventListener("click", resetBotState);
 
+qs("statsDays")?.addEventListener("change", loadStatistics);
+qs("statsSymbol")?.addEventListener("change", loadStatistics);
+qs("refreshStatsBtn")?.addEventListener("click", loadStatistics);
+
+document.querySelectorAll(".nav-item").forEach((item) => {
+  item.addEventListener("click", (e) => {
+    e.preventDefault();
+    setActiveSection(item.dataset.section || "dashboard");
+  });
+});
+
 qs("reloadSymbolsBtn")?.addEventListener("click", async () => {
   try {
     await withButtonLock("reloadSymbolsBtn", async () => {
@@ -918,6 +1034,10 @@ function startUiLoops() {
     loadStatus();
     loadAutoStatus();
     loadAutoHistory();
+
+    if (!qs("statsSection")?.classList.contains("hidden")) {
+      loadStatistics();
+    }
   }, 5000);
 }
 

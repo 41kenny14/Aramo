@@ -25,7 +25,7 @@ import {
   isMemeSymbol,
   getSignalEdge
 } from "./riskEngine.js";
-import { logTradeOpen, logTradeClose, logAdvice, getOpenTrades } from "./db.js";
+import { logTradeOpen, logTradeClose, logAdvice, getOpenTrades, getTradingStatistics } from "./db.js";
 
 const app = express();
 
@@ -1683,6 +1683,24 @@ app.post("/api/reverse-mode", (req, res) => {
     runtime.lastAction = enabled ? "reverse_mode_on" : "reverse_mode_off";
 
     res.json({ ok: true, reverseMode: runtime.reverseMode });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+
+app.get("/api/statistics", async (req, res) => {
+  try {
+    const days = Number(req.query.days || 30);
+    const symbol = String(req.query.symbol || "").trim().toUpperCase();
+    const limit = Number(req.query.limit || 8);
+
+    const stats = getTradingStatistics({ days, symbol, limit });
+
+    res.json({
+      ok: true,
+      ...stats
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }

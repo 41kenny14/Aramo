@@ -129,6 +129,166 @@ WHERE status = 'OPEN'
 ORDER BY opened_at DESC
 `);
 
+const getTradeStatsSummaryStmt = db.prepare(`
+WITH trade_stats AS (
+  SELECT
+    trade_id,
+    symbol,
+    direction,
+    leverage,
+    entry_price,
+    closed_price,
+    close_reason,
+    opened_at,
+    closed_at,
+    CASE
+      WHEN closed_at IS NULL OR closed_price IS NULL OR entry_price <= 0 THEN NULL
+      WHEN direction = 'LONG' THEN ((closed_price - entry_price) / entry_price) * 100 * leverage
+      WHEN direction = 'SHORT' THEN ((entry_price - closed_price) / entry_price) * 100 * leverage
+      ELSE ((closed_price - entry_price) / entry_price) * 100
+    END AS pnl_pct,
+    CASE
+      WHEN closed_at IS NULL THEN NULL
+      ELSE (closed_at - opened_at) / 60000.0
+    END AS duration_min
+  FROM trade_logs
+  WHERE opened_at >= @since
+    AND (@symbol = '' OR symbol = @symbol)
+)
+SELECT
+  COUNT(*) AS total,
+  SUM(CASE WHEN closed_at IS NOT NULL THEN 1 ELSE 0 END) AS closed,
+  SUM(CASE WHEN closed_at IS NULL THEN 1 ELSE 0 END) AS open,
+  ROUND(AVG(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct END), 4) AS avg_pnl_pct,
+  ROUND(AVG(CASE WHEN duration_min IS NOT NULL THEN duration_min END), 2) AS avg_duration_min,
+  ROUND(MAX(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct END), 4) AS best_pnl_pct,
+  ROUND(MIN(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct END), 4) AS worst_pnl_pct,
+  SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS wins,
+  SUM(CASE WHEN pnl_pct < 0 THEN 1 ELSE 0 END) AS losses,
+  ROUND(
+    CASE
+      WHEN SUM(CASE WHEN pnl_pct IS NOT NULL THEN 1 ELSE 0 END) = 0 THEN NULL
+      ELSE (SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) * 100.0) / SUM(CASE WHEN pnl_pct IS NOT NULL THEN 1 ELSE 0 END)
+    END,
+    2
+  ) AS win_rate
+FROM trade_stats
+`);
+
+const getTradeExtremesStmt = db.prepare(`
+WITH closed_stats AS (
+  SELECT
+    trade_id,
+    symbol,
+    direction,
+    leverage,
+    entry_price,
+    closed_price,
+    close_reason,
+    opened_at,
+    closed_at,
+    CASE
+      WHEN closed_price IS NULL OR entry_price <= 0 THEN NULL
+      WHEN direction = 'LONG' THEN ((closed_price - entry_price) / entry_price) * 100 * leverage
+      WHEN direction = 'SHORT' THEN ((entry_price - closed_price) / entry_price) * 100 * leverage
+      ELSE ((closed_price - entry_price) / entry_price) * 100
+    END AS pnl_pct,
+    (closed_at - opened_at) / 60000.0 AS duration_min
+  FROM trade_logs
+  WHERE closed_at IS NOT NULL
+    AND opened_at >= @since
+    AND (@symbol = '' OR symbol = @symbol)
+)
+SELECT
+  trade_id,
+  symbol,
+  direction,
+  leverage,
+  entry_price,
+  closed_price,
+  close_reason,
+  opened_at,
+  closed_at,
+  ROUND(pnl_pct, 4) AS pnl_pct,
+  ROUND(duration_min, 2) AS duration_min
+FROM closed_stats
+WHERE pnl_pct IS NOT NULL
+ORDER BY CASE WHEN @mode = 'best' THEN pnl_pct END DESC,
+         CASE WHEN @mode = 'worst' THEN pnl_pct END ASC,
+         closed_at DESC
+LIMIT @limit
+`);
+
+const getTradeDurationsStmt = db.prepare(`
+SELECT
+  trade_id,
+  symbol,
+  direction,
+  opened_at,
+  closed_at,
+  ROUND((closed_at - opened_at) / 60000.0, 2) AS duration_min,
+  close_reason
+FROM trade_logs
+WHERE closed_at IS NOT NULL
+  AND opened_at >= @since
+  AND (@symbol = '' OR symbol = @symbol)
+ORDER BY duration_min DESC
+LIMIT @limit
+`);
+
+const getCloseReasonsStmt = db.prepare(`
+SELECT
+  COALESCE(close_reason, 'UNKNOWN') AS reason,
+  COUNT(*) AS total
+FROM trade_logs
+WHERE closed_at IS NOT NULL
+  AND opened_at >= @since
+  AND (@symbol = '' OR symbol = @symbol)
+GROUP BY COALESCE(close_reason, 'UNKNOWN')
+ORDER BY total DESC
+LIMIT 10
+`);
+
+const getTopSymbolsStmt = db.prepare(`
+WITH closed_stats AS (
+  SELECT
+    symbol,
+    CASE
+      WHEN closed_price IS NULL OR entry_price <= 0 THEN NULL
+      WHEN direction = 'LONG' THEN ((closed_price - entry_price) / entry_price) * 100 * leverage
+      WHEN direction = 'SHORT' THEN ((entry_price - closed_price) / entry_price) * 100 * leverage
+      ELSE ((closed_price - entry_price) / entry_price) * 100
+    END AS pnl_pct
+  FROM trade_logs
+  WHERE closed_at IS NOT NULL
+    AND opened_at >= @since
+    AND (@symbol = '' OR symbol = @symbol)
+)
+SELECT
+  symbol,
+  COUNT(*) AS trades,
+  ROUND(AVG(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct END), 4) AS avg_pnl_pct,
+  ROUND(SUM(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct ELSE 0 END), 4) AS net_pnl_pct
+FROM closed_stats
+GROUP BY symbol
+ORDER BY trades DESC, net_pnl_pct DESC
+LIMIT 8
+`);
+
+const getSignalSummaryStmt = db.prepare(`
+SELECT
+  COUNT(*) AS total_signals,
+  ROUND(AVG(score), 2) AS avg_score,
+  ROUND(AVG(long_prob), 2) AS avg_long_prob,
+  ROUND(AVG(short_prob), 2) AS avg_short_prob,
+  SUM(CASE WHEN suggested_action = 'LONG' THEN 1 ELSE 0 END) AS long_signals,
+  SUM(CASE WHEN suggested_action = 'SHORT' THEN 1 ELSE 0 END) AS short_signals,
+  SUM(CASE WHEN suggested_action = 'NO_TRADE' THEN 1 ELSE 0 END) AS no_trade_signals
+FROM signal_logs
+WHERE created_at >= @since
+  AND (@symbol = '' OR symbol = @symbol)
+`);
+
 export function logSignal(symbol, signal) {
   insertSignalStmt.run({
     symbol,
@@ -214,6 +374,35 @@ export function logAdvice(tradeId, advice) {
     prob_against_side: advice.probAgainstSide,
     created_at: Date.now()
   });
+}
+
+export function getTradingStatistics({ days = 30, symbol = "", limit = 8 } = {}) {
+  const parsedDays = Number.isFinite(Number(days)) ? Math.max(1, Math.min(365, Number(days))) : 30;
+  const safeSymbol = String(symbol || "").trim().toUpperCase();
+  const safeLimit = Number.isFinite(Number(limit)) ? Math.max(3, Math.min(20, Number(limit))) : 8;
+  const since = Date.now() - parsedDays * 24 * 60 * 60 * 1000;
+  const params = { since, symbol: safeSymbol, limit: safeLimit };
+
+  const summary = getTradeStatsSummaryStmt.get(params);
+  const bestTrades = getTradeExtremesStmt.all({ ...params, mode: "best" });
+  const worstTrades = getTradeExtremesStmt.all({ ...params, mode: "worst" });
+  const longestTrades = getTradeDurationsStmt.all(params);
+  const closeReasons = getCloseReasonsStmt.all(params);
+  const topSymbols = getTopSymbolsStmt.all(params);
+  const signalSummary = getSignalSummaryStmt.get(params);
+
+  return {
+    windowDays: parsedDays,
+    symbol: safeSymbol || null,
+    summary,
+    signalSummary,
+    bestTrades,
+    worstTrades,
+    longestTrades,
+    closeReasons,
+    topSymbols,
+    generatedAt: Date.now()
+  };
 }
 
 export default db;

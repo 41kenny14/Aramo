@@ -135,6 +135,7 @@
             <div class="kpi-info">
               <span>Estado bot</span>
               <strong id="botStatusPanel">—</strong>
+              <button id="resetBotBtn" class="btn btn-ghost btn-xs hidden" type="button">Reset bot</button>
             </div>
           </div>
         </div>
@@ -153,9 +154,16 @@
               <span>Sin datos de señal</span>
               <div id="signalExtraInfo" class="banner-extra">—</div>
             </div>
-                <div class="panel" style="margin-top:12px;">
+            <div class="panel" style="margin-top:12px;">
               <div class="panel-header"><h3>ESTADO DEL BOT / RAZONAMIENTO</h3></div>
-              <pre id="botReasoning" class="json-box">Sin datos aún.</pre>
+              <div id="botReasoning" class="reasoning-box">
+                <p id="botReasoningSummary" class="reasoning-main">Sin datos aún.</p>
+                <p id="botReasoningWhy" class="reasoning-why">Cuando llegue una señal, acá te vamos a explicar el porqué en palabras simples.</p>
+                <details class="reasoning-details">
+                  <summary>Saber más</summary>
+                  <pre id="botReasoningBreakdown" class="json-box">Sin desglose aún.</pre>
+                </details>
+              </div>
             </div>
             <!-- SIGNAL CONFIG PANEL -->
             <div class="panel" id="signal-section">
@@ -340,6 +348,7 @@
                   <h3>Oportunidades</h3>
                   <p>Escaneo del mercado en tiempo real</p>
                 </div>
+                <span id="scannerUpdatedAt" class="scanner-updated">Actualizado: —</span>
               </div>
               <div id="scannerAlertBox" class="list-stack">
                 <div class="empty-state">

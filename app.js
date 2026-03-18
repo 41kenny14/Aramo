@@ -51,6 +51,27 @@ function formatNum(v, digits = 8) {
   return n.toLocaleString("es-AR", { maximumFractionDigits: digits });
 }
 
+function formatTimeAgo(timestamp) {
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || ts <= 0) return "—";
+
+  const diffMs = Date.now() - ts;
+  if (diffMs < 0) return "recién";
+
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 5) return "hace unos segundos";
+  if (sec < 60) return `hace ${sec} seg`;
+
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `hace ${min} min`;
+
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24) return `hace ${hrs} h`;
+
+  const days = Math.floor(hrs / 24);
+  return `hace ${days} d`;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -71,12 +92,34 @@ function getSignalSetupType(signal) {
 }
 
 async function api(url, options = {}) {
-  const res = await fetch(url, options);
-  const data = await res.json();
-  if (!res.ok || !data.ok) {
-    throw new Error(data.error || "Error desconocido");
+  const controller = new AbortController();
+  const timeoutMs = Number(options.timeoutMs || 12000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
+    const res = await fetch(url, { ...fetchOptions, signal: controller.signal });
+
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`Respuesta inválida (${res.status})`);
+    }
+
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || "Error desconocido");
+    }
+
+    return data;
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      throw new Error("Timeout de conexión. Reintentá en unos segundos.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return data;
 }
 
 async function guardedLoad(key, fn) {
@@ -230,19 +273,24 @@ function renderSignal(signal) {
   }
 
 
-  const reasoningPanel = qs("botReasoning");
-  if (reasoningPanel) {
-    const txt = {
-      marketState: signal.marketState,
-      confidence: signal.marketStateConfidence,
-      edgeScore: signal.edgeScore,
-      estimatedSuccessProb: signal.estimatedSuccessProb,
-      summary: signal.reasoning?.summary,
-      waitingFor: signal.reasoning?.waitingFor || [],
-      nextLevels: signal.reasoning?.nextLevels || {}
-    };
-    reasoningPanel.textContent = JSON.stringify(txt, null, 2);
-  }
+  const summaryText = signal.reasoning?.summary || "Sin summary disponible todavía.";
+  setText("botReasoningSummary", summaryText);
+
+  const friendlyReason = isNoTrade
+    ? `Ahora mismo no conviene entrar porque la señal todavía no está firme (${signal.confidence || "LOW"}). Lo más sano es esperar confirmación para evitar meterse en un trade flojo.`
+    : `Pinta ${signal.suggestedAction} porque hay más probabilidad a favor (${formatNum(Math.max(signal.probabilities?.longProb || 0, signal.probabilities?.shortProb || 0), 1)}%) y el setup ${setupType} está acompañando. O sea, el contexto está más prolijo para intentar entrada.`;
+  setText("botReasoningWhy", friendlyReason);
+
+  const breakdown = {
+    marketState: signal.marketState,
+    confidence: signal.marketStateConfidence,
+    edgeScore: signal.edgeScore,
+    estimatedSuccessProb: signal.estimatedSuccessProb,
+    summary: signal.reasoning?.summary,
+    waitingFor: signal.reasoning?.waitingFor || [],
+    nextLevels: signal.reasoning?.nextLevels || {}
+  };
+  setText("botReasoningBreakdown", JSON.stringify(breakdown, null, 2));
 
   setSignalAlertClass(signal.suggestedAction, signal.confidence);
 }
@@ -415,35 +463,6 @@ function renderScannerFindings(findings) {
 
   setHTML("scannerAlertBox", visible.map(scannerCardHtml).join(""));
 }
-function renderScannerStats(data) {
-  const statsEl = qs("scannerStatsBox");
-  if (!statsEl) return;
-
-  const scanner = data?.scanner || {};
-  const stats = scanner.lastStats || null;
-
-  if (!stats) {
-    statsEl.textContent = "Sin estadísticas de scanner todavía.";
-    return;
-  }
-
-  const rejectedBy = stats.rejectedBy || {};
-  const totals = stats.totals || {};
-  const batch = stats.batch || {};
-  const cfg = stats.config || {};
-
-  statsEl.textContent =
-    `Batch ${batch.start}-${batch.end} (${batch.size}) | ` +
-    `inspected=${totals.inspected ?? 0} fulfilled=${totals.fulfilled ?? 0} accepted=${totals.accepted ?? 0} rejected=${totals.rejected ?? 0} errors=${totals.requestErrors ?? 0} kept=${totals.keptAfterMerge ?? 0}\n` +
-    `cfg: prob>=${cfg.minProbability} score>=${cfg.minScore} edge>=${cfg.minEdge} period=${cfg.signalPeriod}\n` +
-    `rejectedBy: ` +
-    `NO_TRADE=${rejectedBy.NO_TRADE ?? 0}, ` +
-    `LOW_PROBABILITY=${rejectedBy.LOW_PROBABILITY ?? 0}, ` +
-    `LOW_SCORE=${rejectedBy.LOW_SCORE ?? 0}, ` +
-    `LOW_EDGE=${rejectedBy.LOW_EDGE ?? 0}, ` +
-    `LOW_CONFIDENCE=${rejectedBy.LOW_CONFIDENCE ?? 0}, ` +
-    `COMPRESSION=${rejectedBy.COMPRESSION ?? 0}`;
-}
 async function loadSymbols(forceRefresh = false) {
   const suffix = forceRefresh ? "?refresh=1" : "";
   const data = await api(`/api/symbols${suffix}`);
@@ -496,8 +515,10 @@ async function loadScanner() {
       const data = await api("/api/scan-opportunities");
       renderScannerFindings(data.findings || []);
       renderScannerStats(data);
+      setText("scannerUpdatedAt", `Actualizado: ${formatTimeAgo(data.lastRunAt)}`);
     } catch (e) {
       console.error("Scanner error:", e.message);
+      setText("scannerUpdatedAt", "Actualizado: error temporal");
     }
   });
 }
@@ -507,11 +528,17 @@ async function loadStatus() {
     const data = await api("/api/status");
     const bot = data.bot || {};
 
-    setText("botStatus", bot.status || "-");
-    setText("botStatusPanel", bot.status || "-");
+    const botStatus = bot.status || "-";
+    setText("botStatus", botStatus);
+    setText("botStatusPanel", botStatus);
     setText("botAction", bot.lastAction || "-");
     setText("botError", bot.lastError || "-");
     setText("rawStatus", JSON.stringify(data, null, 2));
+
+    const resetBtn = qs("resetBotBtn");
+    if (resetBtn) {
+      resetBtn.classList.toggle("hidden", botStatus !== "error");
+    }
     const sniperOn = Boolean(bot?.accountState?.sniperMode);
     const gridOn = Boolean(bot?.accountState?.gridMode);
     const sniperBtn = qs("sniperModeBtn");
@@ -539,7 +566,7 @@ async function loadStatus() {
 }
 
 async function refreshAll() {
-  await Promise.all([
+  await Promise.allSettled([
     loadHealth(),
     loadBalances(),
     loadSignal(),
@@ -771,6 +798,19 @@ async function toggleSniperMode() {
   }
 }
 
+
+async function resetBotState() {
+  try {
+    await withButtonLock("resetBotBtn", async () => {
+      const data = await api("/api/reset-runtime", { method: "POST" });
+      setResult(data.message || "Bot reseteado.");
+      await refreshAll();
+    });
+  } catch (e) {
+    setResult(`No se pudo resetear: ${e.message}`, true);
+  }
+}
+
 window.executeDraft = executeDraft;
 window.cancelDraft = cancelDraft;
 window.closeTrade = closeTrade;
@@ -792,6 +832,7 @@ qs("autoToggleBtn")?.addEventListener("click", toggleAutoTrading);
 qs("signalPeriod")?.addEventListener("change", loadSignal);
 qs("gridModeBtn")?.addEventListener("click", toggleGridMode);
 qs("sniperModeBtn")?.addEventListener("click", toggleSniperMode);
+qs("resetBotBtn")?.addEventListener("click", resetBotState);
 
 qs("reloadSymbolsBtn")?.addEventListener("click", async () => {
   try {

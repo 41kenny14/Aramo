@@ -1674,6 +1674,23 @@ app.get("/api/scan-opportunities", async (_req, res) => {
   }
 });
 
+app.post("/api/reset-runtime", async (_req, res) => {
+  try {
+    runtime.locked = false;
+    runtime.status = "idle";
+    runtime.lastError = null;
+    runtime.lastAction = "manual_reset";
+
+    res.json({
+      ok: true,
+      message: "Runtime reseteado. El bot puede seguir operando.",
+      bot: runtime
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.get("/api/status", async (_req, res) => {
   try {
     cleanupExpiredDrafts();

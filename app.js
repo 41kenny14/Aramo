@@ -465,6 +465,8 @@ function renderSignal(signal) {
 
 function draftCardHtml(draft) {
   const t = draft.trade;
+  const slLabel = t.useStopLoss ? t.stopLoss : "Desactivado";
+  const tpLabel = t.useTakeProfit ? t.takeProfit : "Desactivado";
   return `
     <div class="list-card">
       <div class="title-row">
@@ -487,8 +489,8 @@ function draftCardHtml(draft) {
         <div class="info-row"><span>Raw amount</span><strong>${escapeHtml(t.rawAmount ?? "-")}</strong></div>
         <div class="info-row"><span>Min amount</span><strong>${escapeHtml(t.minAmount ?? "-")}</strong></div>
         <div class="info-row"><span>Entrada ref.</span><strong>${escapeHtml(t.entryReference)}</strong></div>
-        <div class="info-row"><span>SL</span><strong>${escapeHtml(t.stopLoss)}</strong></div>
-        <div class="info-row"><span>TP</span><strong>${escapeHtml(t.takeProfit)}</strong></div>
+        <div class="info-row"><span>SL</span><strong>${escapeHtml(slLabel)}</strong></div>
+        <div class="info-row"><span>TP</span><strong>${escapeHtml(tpLabel)}</strong></div>
         <div class="info-row"><span>Modo</span><strong>${escapeHtml(t.directionMode || "ORIGINAL")}</strong></div>
       </div>
 
@@ -761,11 +763,18 @@ async function previewTrade() {
     return;
   }
 
+  const useStopLoss = qs("useStopLoss")?.checked !== false;
+  const useTakeProfit = qs("useTakeProfit")?.checked !== false;
+  const manualEntryPriceRaw = Number(qs("manualEntryPrice")?.value);
+
   const payload = {
     symbol,
     percent: Number(qs("percent")?.value || 20),
-    stopLossPct: Number(qs("sl")?.value || 0.6),
-    takeProfitPct: Number(qs("tp")?.value || 0.8),
+    stopLossPct: useStopLoss ? Number(qs("sl")?.value || 0.6) : null,
+    takeProfitPct: useTakeProfit ? Number(qs("tp")?.value || 0.8) : null,
+    useStopLoss,
+    useTakeProfit,
+    entryPrice: Number.isFinite(manualEntryPriceRaw) && manualEntryPriceRaw > 0 ? manualEntryPriceRaw : null,
     signalPeriod: qs("signalPeriod")?.value || "5min",
     directionMode: manualPreviewDirectionMode
   };
@@ -897,6 +906,16 @@ function renderReverseMode(enabled) {
 async function togglePreviewDirectionMode() {
   manualPreviewDirectionMode = manualPreviewDirectionMode === "INVERTED" ? "ORIGINAL" : "INVERTED";
   renderManualPreviewMode();
+}
+
+function syncManualRiskControls() {
+  const useSl = qs("useStopLoss")?.checked !== false;
+  const useTp = qs("useTakeProfit")?.checked !== false;
+  const slInput = qs("sl");
+  const tpInput = qs("tp");
+
+  if (slInput) slInput.disabled = !useSl;
+  if (tpInput) tpInput.disabled = !useTp;
 }
 
 async function toggleReverseMode() {
@@ -1078,6 +1097,8 @@ qs("autoToggleBtn")?.addEventListener("click", toggleAutoTrading);
 qs("previewDirectionBtn")?.addEventListener("click", togglePreviewDirectionMode);
 qs("reverseModeBtn")?.addEventListener("click", toggleReverseMode);
 qs("signalPeriod")?.addEventListener("change", loadSignal);
+qs("useStopLoss")?.addEventListener("change", syncManualRiskControls);
+qs("useTakeProfit")?.addEventListener("change", syncManualRiskControls);
 qs("gridModeBtn")?.addEventListener("click", toggleGridMode);
 qs("sniperModeBtn")?.addEventListener("click", toggleSniperMode);
 qs("resetBotBtn")?.addEventListener("click", resetBotState);
@@ -1107,6 +1128,7 @@ qs("reloadSymbolsBtn")?.addEventListener("click", async () => {
 
 renderManualPreviewMode();
 renderLearningFeed();
+syncManualRiskControls();
 
 (async function init() {
   try {

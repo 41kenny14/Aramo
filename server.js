@@ -288,11 +288,25 @@ async function runGridExecutionForSymbol(item, availableUsdt) {
   runtime.lastAction = `grid_orders_placed_${symbol}`;
 }
 
-function buildLimitPlan({ signal, markPrice, marketInfo, direction }) {
+function buildLimitPlan({ signal, markPrice, marketInfo, direction, entryOverride }) {
   const atrPct15 = numberOrZero(signal?.metrics?.atrPct15 || 0.25);
   const spreadBufferPct = Math.max(atrPct15 * 0.12, 0.05);
   const offsetPct = Math.max(atrPct15 * 0.35, spreadBufferPct);
   const tick = numberOrZero(marketInfo?.tick_size || 0.0001);
+  const manualEntry = numberOrZero(entryOverride);
+
+  if (manualEntry > 0) {
+    return {
+      entryPrice: fixedByTick(manualEntry, tick),
+      offsetPct: Number(offsetPct.toFixed(4)),
+      atrPct15: Number(atrPct15.toFixed(4)),
+      spreadBufferPct: Number(spreadBufferPct.toFixed(4)),
+      fillProbability: 0.65,
+      entrySource: "MANUAL",
+      zoneType: signal?.entryPlan?.zoneType || "NONE",
+      zoneStrength: Number(numberOrZero(signal?.entryPlan?.zoneStrength).toFixed(2))
+    };
+  }
 
   const fallbackEntryPrice = direction === "LONG"
     ? fixedByTick(markPrice * (1 - offsetPct / 100), tick)
@@ -605,8 +619,12 @@ function validateSignalPeriod(period) {
 function validatePreviewPayload(body, allowedSymbols) {
   const symbol = normalizeSymbol(body.symbol);
   const percent = Number(body.percent);
-  const stopLossPct = Number(body.stopLossPct);
-  const takeProfitPct = Number(body.takeProfitPct);
+  const useStopLoss = body.useStopLoss !== false;
+  const useTakeProfit = body.useTakeProfit !== false;
+  const stopLossPct = useStopLoss ? Number(body.stopLossPct) : null;
+  const takeProfitPct = useTakeProfit ? Number(body.takeProfitPct) : null;
+  const entryPriceRaw = Number(body.entryPrice);
+  const entryPrice = Number.isFinite(entryPriceRaw) && entryPriceRaw > 0 ? entryPriceRaw : null;
   const signalPeriod = String(body.signalPeriod || "5min");
   const directionMode = String(body.directionMode || "AUTO").toUpperCase();
 
@@ -616,11 +634,12 @@ function validatePreviewPayload(body, allowedSymbols) {
 
   const validPercents = new Set([5, 10, 15, 20, 25, 50, 75, 100]);
   if (!validPercents.has(percent)) throw new Error("Porcentaje inválido.");
-  if (!Number.isFinite(stopLossPct) || stopLossPct <= 0) throw new Error("Stop Loss % inválido.");
-  if (!Number.isFinite(takeProfitPct) || takeProfitPct <= 0) throw new Error("Take Profit % inválido.");
-
-  const rr = takeProfitPct / stopLossPct;
-  if (rr < 1.25) throw new Error("Riesgo/beneficio insuficiente: TP/SL debe ser >= 1.25.");
+  if (useStopLoss && (!Number.isFinite(stopLossPct) || stopLossPct <= 0)) throw new Error("Stop Loss % inválido.");
+  if (useTakeProfit && (!Number.isFinite(takeProfitPct) || takeProfitPct <= 0)) throw new Error("Take Profit % inválido.");
+  if (useStopLoss && useTakeProfit) {
+    const rr = takeProfitPct / stopLossPct;
+    if (rr < 1.25) throw new Error("Riesgo/beneficio insuficiente: TP/SL debe ser >= 1.25.");
+  }
 
   validateSignalPeriod(signalPeriod);
 
@@ -629,7 +648,17 @@ function validatePreviewPayload(body, allowedSymbols) {
     throw new Error("Modo de dirección inválido.");
   }
 
-  return { symbol, percent, stopLossPct, takeProfitPct, signalPeriod, directionMode };
+  return {
+    symbol,
+    percent,
+    stopLossPct,
+    takeProfitPct,
+    useStopLoss,
+    useTakeProfit,
+    entryPrice,
+    signalPeriod,
+    directionMode
+  };
 }
 
 function validateSignalForEntry(signal) {
@@ -870,7 +899,17 @@ async function waitForPosition({ market, retries = 12, delayMs = 500, attempts, 
 async function buildTradePreview(params) {
   cleanupExpiredDrafts();
 
-  const { symbol, percent, stopLossPct, takeProfitPct, signalPeriod, directionMode = "AUTO" } = params;
+  const {
+    symbol,
+    percent,
+    stopLossPct,
+    takeProfitPct,
+    useStopLoss = true,
+    useTakeProfit = true,
+    entryPrice,
+    signalPeriod,
+    directionMode = "AUTO"
+  } = params;
   const market = buildMarket(symbol);
 
   const active = [...activeTrades.values()];
@@ -915,6 +954,7 @@ async function buildTradePreview(params) {
 
   const markPrice = numberOrZero(ticker.mark_price || ticker.last);
   if (markPrice <= 0) throw new Error("Mark price inválido.");
+  const previewEntryReference = numberOrZero(entryPrice) > 0 ? numberOrZero(entryPrice) : markPrice;
 
   const existingPosition = await findOpenPositionByMarket(market);
   if (existingPosition) {
@@ -928,7 +968,7 @@ async function buildTradePreview(params) {
     availableUsdt: usdtAvailable,
     percentRequested: percent,
     leverage,
-    entryPrice: markPrice,
+    entryPrice: previewEntryReference,
     basePrecision,
     signal,
     accountState: runtime.accountState,
@@ -944,7 +984,7 @@ async function buildTradePreview(params) {
 
   const adjustedSizing = buildAdjustedSizing({
     marketInfo,
-    entryPrice: markPrice,
+    entryPrice: previewEntryReference,
     leverage,
     usdtAvailable,
     sizing
@@ -969,15 +1009,21 @@ async function buildTradePreview(params) {
 
   const side = direction === "LONG" ? "buy" : "sell";
 
-  const stopLoss =
-    direction === "LONG"
-      ? fixedByTick(markPrice * (1 - stopLossPct / 100), marketInfo.tick_size)
-      : fixedByTick(markPrice * (1 + stopLossPct / 100), marketInfo.tick_size);
+  const stopLoss = useStopLoss
+    ? (
+      direction === "LONG"
+        ? fixedByTick(previewEntryReference * (1 - stopLossPct / 100), marketInfo.tick_size)
+        : fixedByTick(previewEntryReference * (1 + stopLossPct / 100), marketInfo.tick_size)
+    )
+    : null;
 
-  const takeProfit =
-    direction === "LONG"
-      ? fixedByTick(markPrice * (1 + takeProfitPct / 100), marketInfo.tick_size)
-      : fixedByTick(markPrice * (1 - takeProfitPct / 100), marketInfo.tick_size);
+  const takeProfit = useTakeProfit
+    ? (
+      direction === "LONG"
+        ? fixedByTick(previewEntryReference * (1 + takeProfitPct / 100), marketInfo.tick_size)
+        : fixedByTick(previewEntryReference * (1 - takeProfitPct / 100), marketInfo.tick_size)
+    )
+    : null;
 
   const draftId = makeId("DRAFT");
 
@@ -1012,12 +1058,14 @@ async function buildTradePreview(params) {
       amount: fixedByDecimals(adjustedSizing.finalAmount, basePrecision),
       rawAmount: sizing.amount,
       minAmount: adjustedSizing.minAmount,
-      entryReference: markPrice,
+      entryReference: previewEntryReference,
       entryType: "limit",
       stopLoss,
       takeProfit,
       stopLossPct,
       takeProfitPct,
+      useStopLoss,
+      useTakeProfit,
       signalPeriod,
       createdAt: Date.now()
     }
@@ -1149,7 +1197,8 @@ async function executeDraftTrade(draftId, meta = {}) {
       signal: freshSignal,
       markPrice: liveMarkPrice,
       marketInfo,
-      direction: draft.direction
+      direction: draft.direction,
+      entryOverride: draft.entryReference
     });
 
     await placeFuturesOrder({
@@ -1171,27 +1220,37 @@ async function executeDraftTrade(draftId, meta = {}) {
 
     const entryPrice = numberOrZero(position.avg_entry_price) || liveMarkPrice;
 
-    const stopLoss =
-      draft.direction === "LONG"
-        ? fixedByTick(entryPrice * (1 - draft.stopLossPct / 100), marketInfo.tick_size)
-        : fixedByTick(entryPrice * (1 + draft.stopLossPct / 100), marketInfo.tick_size);
+    const stopLoss = draft.useStopLoss
+      ? (
+        draft.direction === "LONG"
+          ? fixedByTick(entryPrice * (1 - draft.stopLossPct / 100), marketInfo.tick_size)
+          : fixedByTick(entryPrice * (1 + draft.stopLossPct / 100), marketInfo.tick_size)
+      )
+      : null;
 
-    const takeProfit =
-      draft.direction === "LONG"
-        ? fixedByTick(entryPrice * (1 + draft.takeProfitPct / 100), marketInfo.tick_size)
-        : fixedByTick(entryPrice * (1 - draft.takeProfitPct / 100), marketInfo.tick_size);
+    const takeProfit = draft.useTakeProfit
+      ? (
+        draft.direction === "LONG"
+          ? fixedByTick(entryPrice * (1 + draft.takeProfitPct / 100), marketInfo.tick_size)
+          : fixedByTick(entryPrice * (1 - draft.takeProfitPct / 100), marketInfo.tick_size)
+      )
+      : null;
 
-    await setPositionStopLoss({
-      market,
-      stopLossType: config.coinex.defaultTriggerPriceType,
-      stopLossPrice: stopLoss
-    });
+    if (draft.useStopLoss && stopLoss) {
+      await setPositionStopLoss({
+        market,
+        stopLossType: config.coinex.defaultTriggerPriceType,
+        stopLossPrice: stopLoss
+      });
+    }
 
-    await setPositionTakeProfit({
-      market,
-      takeProfitType: config.coinex.defaultTriggerPriceType,
-      takeProfitPrice: takeProfit
-    });
+    if (draft.useTakeProfit && takeProfit) {
+      await setPositionTakeProfit({
+        market,
+        takeProfitType: config.coinex.defaultTriggerPriceType,
+        takeProfitPrice: takeProfit
+      });
+    }
 
     const tradeId = makeId("TRADE");
 
@@ -1221,6 +1280,8 @@ async function executeDraftTrade(draftId, meta = {}) {
       entryPrice,
       stopLoss,
       takeProfit,
+      useStopLoss: Boolean(draft.useStopLoss),
+      useTakeProfit: Boolean(draft.useTakeProfit),
       signalPeriod: draft.signalPeriod,
       openedAt: Date.now(),
       status: "OPEN",

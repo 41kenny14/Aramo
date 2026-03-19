@@ -91,6 +91,14 @@ const autoClosedTrades = [];
 const symbolState = new Map();
 const symbolLocks = new Map();
 const gridStates = new Map();
+const autoEntryDiagnostics = {
+  cycleStartedAt: 0,
+  cycleFinishedAt: 0,
+  findingsEvaluated: 0,
+  rejectsByReason: {},
+  lastRejectReason: null,
+  lastRejectAt: 0
+};
 
 const MAX_DRAFT_AGE_MS = 60 * 1000;
 
@@ -114,6 +122,21 @@ function cleanupExpiredDrafts() {
   }
 
   return removed;
+}
+
+function resetAutoEntryDiagnosticsCycle() {
+  autoEntryDiagnostics.cycleStartedAt = Date.now();
+  autoEntryDiagnostics.cycleFinishedAt = 0;
+  autoEntryDiagnostics.findingsEvaluated = 0;
+  autoEntryDiagnostics.rejectsByReason = {};
+}
+
+function addAutoEntryReject(reason) {
+  const normalized = String(reason || "UNKNOWN");
+  autoEntryDiagnostics.lastRejectReason = normalized;
+  autoEntryDiagnostics.lastRejectAt = Date.now();
+  autoEntryDiagnostics.rejectsByReason[normalized] =
+    numberOrZero(autoEntryDiagnostics.rejectsByReason[normalized]) + 1;
 }
 
 
@@ -1493,10 +1516,13 @@ async function runAutoCloseCycle() {
 }
 
 async function runAutoEntryCycle() {
+  resetAutoEntryDiagnosticsCycle();
   cleanupExpiredDrafts();
 
   const guardrail = maybePauseAutoByGuardrails();
   if (!guardrail.ok) {
+    addAutoEntryReject(guardrail.reason);
+    autoEntryDiagnostics.cycleFinishedAt = Date.now();
     runtime.lastAction = "auto_guardrail_pause";
     return;
   }
@@ -1512,6 +1538,7 @@ async function runAutoEntryCycle() {
 
   for (const item of findings) {
     try {
+      autoEntryDiagnostics.findingsEvaluated += 1;
       if (isBlockedSymbol(item.symbol)) continue;
 
       const mode = resolveAutoExecutionMode(item);
@@ -1523,7 +1550,10 @@ async function runAutoEntryCycle() {
       }
 
       const findingCheck = validateScannerFindingForAuto(item, mode);
-      if (!findingCheck.ok) continue;
+      if (!findingCheck.ok) {
+        addAutoEntryReject(findingCheck.reason);
+        continue;
+      }
 
       if (remainingSlots <= 0) break;
 
@@ -1548,12 +1578,18 @@ async function runAutoEntryCycle() {
           .reduce((acc, t) => acc + numberOrZero(t.marginUsed || t.usableMargin || 0), 0)
       });
 
-      if (!gate.ok) continue;
+      if (!gate.ok) {
+        addAutoEntryReject(gate.reason);
+        continue;
+      }
 
       const alreadyDrafted = [...draftTrades.values()].some(
         (d) => d.trade?.symbol === item.symbol
       );
-      if (alreadyDrafted) continue;
+      if (alreadyDrafted) {
+        addAutoEntryReject("Ya existe draft para símbolo.");
+        continue;
+      }
 
       const autoRisk = getAdaptiveAutoRisk(item);
 
@@ -1571,11 +1607,15 @@ async function runAutoEntryCycle() {
           executeDraftTrade(preview.draftId, { autoOpened: true, allowConcurrent: true })
             .catch((error) => {
               remainingSlots += 1;
+              addAutoEntryReject(error.message || "Error de ejecución auto.");
               console.error("Auto entry execution error:", item.symbol, error.message);
             })
         );
+      } else {
+        addAutoEntryReject(preview?.reason || "Preview no permitido.");
       }
     } catch (error) {
+      addAutoEntryReject(error.message || "Error auto entry.");
       console.error("Auto entry error:", item.symbol, error.message);
     }
   }
@@ -1583,6 +1623,7 @@ async function runAutoEntryCycle() {
   if (pendingExecutions.length > 0) {
     await Promise.allSettled(pendingExecutions);
   }
+  autoEntryDiagnostics.cycleFinishedAt = Date.now();
 }
 
 async function autoTradingLoop() {
@@ -1618,6 +1659,7 @@ app.get("/api/health", async (_req, res) => {
     guardrailReason: runtime.accountState.guardrailReason,
     autoPauseUntil: runtime.accountState.autoPauseUntil,
     autoExecutionMode: runtime.accountState.autoExecutionMode,
+    autoEntryDiagnostics,
     reverseMode: runtime.reverseMode
   });
 });
@@ -1739,6 +1781,7 @@ app.get("/api/auto-status", async (_req, res) => {
     guardrailReason: runtime.accountState.guardrailReason,
     autoPauseUntil: runtime.accountState.autoPauseUntil,
     autoExecutionMode: runtime.accountState.autoExecutionMode,
+    autoEntryDiagnostics,
     reverseMode: runtime.reverseMode
   });
 });

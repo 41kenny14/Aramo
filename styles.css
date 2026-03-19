@@ -622,6 +622,26 @@ html, body {
   padding-right: 28px;
 }
 
+.checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 12px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.checkbox-inline input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--blue);
+}
+
 .input-unit {
   position: absolute;
   right: 11px;

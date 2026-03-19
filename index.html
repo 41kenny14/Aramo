@@ -240,11 +240,31 @@
 
                 <div class="form-row tight">
                   <div class="field">
+                    <label for="manualEntryPrice">Precio entrada (manual)</label>
+                    <div class="number-input-wrap">
+                      <input id="manualEntryPrice" type="number" min="0" step="0.00000001" placeholder="Auto (mark)" />
+                    </div>
+                  </div>
+                  <div class="field field-check">
+                    <label for="useStopLoss">Stop Loss</label>
+                    <label class="checkbox-inline">
+                      <input id="useStopLoss" type="checkbox" checked />
+                      <span>Usar SL</span>
+                    </label>
+                  </div>
+                  <div class="field">
                     <label for="sl">Stop Loss %</label>
                     <div class="number-input-wrap">
                       <input id="sl" type="number" min="0.1" step="0.1" value="1" />
                       <span class="input-unit">%</span>
                     </div>
+                  </div>
+                  <div class="field field-check">
+                    <label for="useTakeProfit">Take Profit</label>
+                    <label class="checkbox-inline">
+                      <input id="useTakeProfit" type="checkbox" checked />
+                      <span>Usar TP</span>
+                    </label>
                   </div>
                   <div class="field">
                     <label for="tp">Take Profit %</label>

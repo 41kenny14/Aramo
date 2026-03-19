@@ -5,9 +5,30 @@ const BASE_URL = String(config.coinex.baseUrl || "").replace(/\/+$/, "");
 const API_PREFIX = "/v2";
 const REQUEST_TIMEOUT_MS = Number(config.coinex.requestTimeoutMs || 10000);
 const PUBLIC_RETRY_COUNT = Number(config.coinex.publicRetryCount || 1);
+const MAX_PRIVATE_TONCE_RETRIES = 1;
+let coinexTimeOffsetMs = 0;
 
-function nowMs() {
-  return Date.now().toString();
+function nowMs(applyOffset = false) {
+  const base = Date.now();
+  const withOffset = applyOffset ? base + coinexTimeOffsetMs : base;
+  return Math.max(0, Math.trunc(withOffset)).toString();
+}
+
+function updateCoinexTimeOffsetFromDateHeader(dateHeader) {
+  const serverMs = Date.parse(String(dateHeader || ""));
+  if (!Number.isFinite(serverMs)) return false;
+
+  coinexTimeOffsetMs = serverMs - Date.now();
+  return true;
+}
+
+function isTonceWindowError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("tonce") ||
+    message.includes("timestamp") ||
+    message.includes("windowtime")
+  );
 }
 
 function num(v) {
@@ -109,7 +130,8 @@ async function coinexRequest({
   query = null,
   body = null,
   auth = false,
-  timeoutMs = REQUEST_TIMEOUT_MS
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  useCoinexTimeOffset = false
 }) {
   assertNonEmptyString("path", path);
 
@@ -124,7 +146,7 @@ async function coinexRequest({
   };
 
   if (auth) {
-    const timestamp = nowMs();
+    const timestamp = nowMs(useCoinexTimeOffset);
     const sign = signRequest(method, pathWithQuery, bodyString, timestamp, config.coinex.secretKey);
 
     headers["X-COINEX-KEY"] = config.coinex.accessId;
@@ -144,12 +166,14 @@ async function coinexRequest({
       timeoutMs
     );
 
+    const serverDateHeader = res.headers.get("date");
     const payload = await parseJsonSafe(res);
 
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status} - ${payload?.message || "Error HTTP"}`);
       err.httpStatus = res.status;
       err.coinexCode = payload?.code;
+      err.coinexServerDate = serverDateHeader;
       throw err;
     }
 
@@ -157,6 +181,7 @@ async function coinexRequest({
       const err = new Error(payload?.message || "Error CoinEx");
       err.httpStatus = res.status;
       err.coinexCode = payload?.code;
+      err.coinexServerDate = serverDateHeader;
       throw err;
     }
 
@@ -191,7 +216,27 @@ async function publicRequest(args) {
 }
 
 async function privateRequest(args) {
-  return coinexRequest({ ...args, auth: true });
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= MAX_PRIVATE_TONCE_RETRIES; attempt += 1) {
+    try {
+      return await coinexRequest({
+        ...args,
+        auth: true,
+        useCoinexTimeOffset: attempt > 0
+      });
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_PRIVATE_TONCE_RETRIES || !isTonceWindowError(error)) {
+        throw error;
+      }
+
+      const updated = updateCoinexTimeOffsetFromDateHeader(error?.coinexServerDate);
+      if (!updated) throw error;
+    }
+  }
+
+  throw lastError;
 }
 
 export async function getAllFuturesMarkets() {

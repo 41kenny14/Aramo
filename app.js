@@ -505,6 +505,10 @@ function draftCardHtml(draft) {
 function tradeCardHtml(trade) {
   const pos = trade.livePosition || {};
   const advice = trade.advice || {};
+  const isExternalTrade = Boolean(trade.externalTracked);
+  const closeButtonHtml = isExternalTrade
+    ? `<button class="btn btn-danger" disabled title="Trade externo: el bot no puede cerrar ni modificar esta posición.">Externo (solo lectura)</button>`
+    : `<button onclick="closeTrade('${escapeHtml(trade.tradeId)}')" class="btn btn-danger">Cerrar</button>`;
 
   return `
     <div class="list-card highlight">
@@ -542,7 +546,7 @@ function tradeCardHtml(trade) {
       <div class="card-actions">
         <button onclick="sendBotFeedback('${escapeHtml(trade.tradeId)}', '${escapeHtml(trade.symbol)}', 5, 'GOOD_SIGNAL')" class="btn btn-secondary">👍 Útil</button>
         <button onclick="sendBotFeedback('${escapeHtml(trade.tradeId)}', '${escapeHtml(trade.symbol)}', 1, 'BAD_SIGNAL')" class="btn btn-warning">👎 Malo</button>
-        <button onclick="closeTrade('${escapeHtml(trade.tradeId)}')" class="btn btn-danger">Cerrar</button>
+        ${closeButtonHtml}
       </div>
     </div>
   `;

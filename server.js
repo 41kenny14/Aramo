@@ -1702,6 +1702,9 @@ async function executeDraftTrade(draftId, meta = {}) {
 async function closeTradeById(tradeId, reason = "AUTO_CLOSE") {
   const trade = activeTrades.get(tradeId);
   if (!trade) return false;
+  if (trade.externalTracked) {
+    throw new Error("Los trades externos son solo de lectura: no se pueden cerrar ni modificar desde el bot.");
+  }
 
   if (!acquireSymbolLock(trade.symbol)) {
     throw new Error(`El símbolo ${trade.symbol} está ocupado por otra operación.`);
@@ -1806,6 +1809,10 @@ async function runAutoCloseCycle() {
 
   for (const trade of trades) {
     try {
+      if (trade.externalTracked) {
+        continue;
+      }
+
       const position = await findOpenPositionByMarket(trade.market);
 
       if (!position) {
@@ -2340,6 +2347,9 @@ app.post("/api/close-trade/:tradeId", async (req, res) => {
     const trade = activeTrades.get(tradeId);
 
     if (!trade) throw new Error("Trade no encontrada.");
+    if (trade.externalTracked) {
+      throw new Error("No puedes cerrar un trade externo desde el bot.");
+    }
 
     const closeResult = await closeTradeById(tradeId, "MANUAL_CLOSE");
     runtime.lastAction = "manual_close_trade";

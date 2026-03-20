@@ -350,6 +350,9 @@ export function logSignal(symbol, signal) {
 }
 
 export function logTradeOpen(trade) {
+  const safeStopLoss = trade.stopLoss === null || trade.stopLoss === undefined ? "" : String(trade.stopLoss);
+  const safeTakeProfit = trade.takeProfit === null || trade.takeProfit === undefined ? "" : String(trade.takeProfit);
+
   insertTradeStmt.run({
     trade_id: trade.tradeId,
     symbol: trade.symbol,
@@ -361,8 +364,8 @@ export function logTradeOpen(trade) {
     percent: trade.percent,
     amount: trade.amount,
     entry_price: trade.entryPrice,
-    stop_loss: trade.stopLoss,
-    take_profit: trade.takeProfit,
+    stop_loss: safeStopLoss,
+    take_profit: safeTakeProfit,
     signal_period: trade.signalPeriod,
     status: trade.status,
     opened_at: trade.openedAt,

@@ -509,10 +509,38 @@ function roundToTick(value, tickSize) {
   return Math.round(value / tick) * tick;
 }
 
+function getTickDecimals(tickSize) {
+  const tickNum = Number(tickSize);
+  if (!Number.isFinite(tickNum) || tickNum <= 0) return 8;
+
+  const tickRaw = String(tickSize).trim().toLowerCase();
+  if (tickRaw.includes("e-")) {
+    const exp = Number(tickRaw.split("e-")[1]);
+    if (Number.isFinite(exp) && exp >= 0) return Math.min(12, exp);
+  }
+
+  if (tickRaw.includes(".")) {
+    const fraction = tickRaw.split(".")[1] || "";
+    if (!fraction) return 0;
+    return Math.min(12, fraction.replace(/0+$/, "").length || fraction.length);
+  }
+
+  const normalized = tickNum.toString();
+  if (normalized.includes("e-")) {
+    const exp = Number(normalized.split("e-")[1]);
+    if (Number.isFinite(exp) && exp >= 0) return Math.min(12, exp);
+  }
+
+  if (normalized.includes(".")) {
+    const fraction = normalized.split(".")[1] || "";
+    return Math.min(12, fraction.replace(/0+$/, "").length || fraction.length);
+  }
+
+  return 0;
+}
+
 function fixedByTick(value, tickSize) {
-  const tick = String(tickSize);
-  const idx = tick.indexOf(".");
-  const decimals = idx === -1 ? 0 : tick.length - idx - 1;
+  const decimals = getTickDecimals(tickSize);
   return roundToTick(value, tickSize).toFixed(decimals);
 }
 

@@ -971,12 +971,39 @@ function autoClosedCardHtml(item) {
   `;
 }
 
+function renderAutoDiagnostics(data = {}) {
+  const box = qs("autoDiagnosticsBox");
+  if (!box) return;
+
+  const diagnostics = data.autoEntryDiagnostics || {};
+  const rejectMap = diagnostics.rejectsByReason || {};
+  const guardrailReason = data.guardrailReason || "—";
+  const pauseUntil = Number(data.autoPauseUntil || 0);
+
+  const sortedRejects = Object.entries(rejectMap)
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+    .slice(0, 8);
+
+  const rejectSummary = sortedRejects.length
+    ? sortedRejects.map(([reason, count]) => `${reason}=${count}`).join(", ")
+    : "sin rechazos";
+
+  box.textContent =
+    `enabled=${Boolean(data.enabled)} mode=${data.autoExecutionMode || "-"}\n` +
+    `evaluated=${diagnostics.findingsEvaluated ?? 0} lastReject=${diagnostics.lastRejectReason || "—"}\n` +
+    `lastRejectAt=${diagnostics.lastRejectAt ? new Date(diagnostics.lastRejectAt).toLocaleString() : "—"}\n` +
+    `guardrail=${guardrailReason}\n` +
+    `pauseUntil=${pauseUntil > 0 ? new Date(pauseUntil).toLocaleString() : "—"}\n` +
+    `topRejects: ${rejectSummary}`;
+}
+
 async function loadAutoStatus() {
   await guardedLoad("autoStatus", async () => {
     try {
       const data = await api("/api/auto-status");
       renderAutoStatus(Boolean(data.enabled));
       renderReverseMode(Boolean(data.reverseMode));
+      renderAutoDiagnostics(data);
     } catch (e) {
       console.error("Auto status error:", e.message);
     }

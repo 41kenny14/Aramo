@@ -1014,6 +1014,12 @@ function getExternalPositionKey(position, direction = inferPositionDirection(pos
   return `COINEX:${market}:${direction}`;
 }
 
+function buildExternalTradeId(position, direction = inferPositionDirection(position)) {
+  const key = getExternalPositionKey(position, direction);
+  const safeKey = key.replace(/[^A-Z0-9:_-]/gi, "_");
+  return `EXT_${safeKey}`;
+}
+
 function inferOpenedAtFromPosition(position) {
   const candidates = [
     position?.created_at,
@@ -1039,7 +1045,7 @@ async function registerExternalTradeFromPosition(position) {
   const symbol = market.slice(0, -4);
   const direction = inferPositionDirection(position);
   const externalPositionKey = getExternalPositionKey(position, direction);
-  const tradeId = makeId(`EXT_${symbol}`);
+  const tradeId = buildExternalTradeId(position, direction);
   const openedAt = inferOpenedAtFromPosition(position);
   const entryPrice = numberOrZero(position?.avg_entry_price || position?.open_price || position?.mark_price || position?.last);
   const signalPeriod = config.auto.defaultSignalPeriod || "5min";
@@ -2376,6 +2382,12 @@ function hydrateStateFromDb() {
   const openTrades = getOpenTrades();
 
   for (const trade of openTrades) {
+    const details = trade.details || {};
+    const isExternalTracked = details?.source === "COINEX_EXTERNAL_POSITION";
+    const persistedExternalPositionKey = String(
+      details?.externalPositionKey || `COINEX:${trade.market}:${trade.direction}`
+    );
+
     activeTrades.set(trade.tradeId, {
       ...trade,
       requestedPercent: trade.percent,
@@ -2395,7 +2407,9 @@ function hydrateStateFromDb() {
       autoOpenedAt: null,
       autoCloseTargetRoe: null,
       closeReason: trade.closeReason || null,
-      details: trade.details || {}
+      details,
+      externalTracked: isExternalTracked,
+      externalPositionKey: isExternalTracked ? persistedExternalPositionKey : null
     });
 
     markSymbolTradeOpen(trade.symbol);

@@ -667,6 +667,34 @@ function validateSignalPeriod(period) {
   if (!validPeriods.has(period)) throw new Error("Período inválido.");
 }
 
+function toBoundedNumber(value, { min, max, name }) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    throw new Error(`${name} debe ser numérico.`);
+  }
+  if (n < min || n > max) {
+    throw new Error(`${name} fuera de rango (${min} - ${max}).`);
+  }
+  return n;
+}
+
+function getRuntimeConfigSnapshot() {
+  return {
+    scanner: {
+      intervalMs: numberOrZero(config.scanner?.intervalMs),
+      minProbability: numberOrZero(config.scanner?.minProbability),
+      minScore: numberOrZero(config.scanner?.minScore),
+      minEdge: numberOrZero(config.scanner?.minEdge)
+    },
+    auto: {
+      autoScanIntervalMs: numberOrZero(config.auto?.autoScanIntervalMs),
+      autoEntryProbability: numberOrZero(config.auto?.autoEntryProbability),
+      autoMinScore: numberOrZero(config.auto?.autoMinScore),
+      autoMinEdge: numberOrZero(config.auto?.autoMinEdge)
+    }
+  };
+}
+
 function validatePreviewPayload(body, allowedSymbols) {
   const symbol = normalizeSymbol(body.symbol);
   const percent = Number(body.percent);
@@ -1835,6 +1863,71 @@ app.get("/api/auto-history", async (_req, res) => {
     autoOpenedTrades,
     autoClosedTrades
   });
+});
+
+app.get("/api/runtime-config", (_req, res) => {
+  res.json({
+    ok: true,
+    config: getRuntimeConfigSnapshot()
+  });
+});
+
+app.post("/api/runtime-config", (req, res) => {
+  try {
+    const scanner = req.body?.scanner || {};
+    const auto = req.body?.auto || {};
+
+    config.scanner.intervalMs = toBoundedNumber(scanner.intervalMs, {
+      min: 500,
+      max: 3_600_000,
+      name: "scanner.intervalMs"
+    });
+    config.scanner.minProbability = toBoundedNumber(scanner.minProbability, {
+      min: 1,
+      max: 99,
+      name: "scanner.minProbability"
+    });
+    config.scanner.minScore = toBoundedNumber(scanner.minScore, {
+      min: 1,
+      max: 100,
+      name: "scanner.minScore"
+    });
+    config.scanner.minEdge = toBoundedNumber(scanner.minEdge, {
+      min: 0,
+      max: 99,
+      name: "scanner.minEdge"
+    });
+
+    config.auto.autoScanIntervalMs = toBoundedNumber(auto.autoScanIntervalMs, {
+      min: 1000,
+      max: 3_600_000,
+      name: "auto.autoScanIntervalMs"
+    });
+    config.auto.autoEntryProbability = toBoundedNumber(auto.autoEntryProbability, {
+      min: 1,
+      max: 99,
+      name: "auto.autoEntryProbability"
+    });
+    config.auto.autoMinScore = toBoundedNumber(auto.autoMinScore, {
+      min: 1,
+      max: 100,
+      name: "auto.autoMinScore"
+    });
+    config.auto.autoMinEdge = toBoundedNumber(auto.autoMinEdge, {
+      min: 0,
+      max: 99,
+      name: "auto.autoMinEdge"
+    });
+
+    runtime.lastAction = "runtime_config_updated";
+
+    res.json({
+      ok: true,
+      config: getRuntimeConfigSnapshot()
+    });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message });
+  }
 });
 
 app.post("/api/auto-toggle", async (req, res) => {

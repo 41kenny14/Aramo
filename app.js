@@ -696,6 +696,72 @@ async function loadScanner() {
   });
 }
 
+function setInputValue(id, value) {
+  const input = qs(id);
+  if (!input) return;
+  input.value = Number.isFinite(Number(value)) ? String(value) : "";
+}
+
+function renderRuntimeConfig(config) {
+  const scanner = config?.scanner || {};
+  const auto = config?.auto || {};
+
+  setInputValue("scannerIntervalMs", scanner.intervalMs);
+  setInputValue("scannerMinProbability", scanner.minProbability);
+  setInputValue("scannerMinScore", scanner.minScore);
+  setInputValue("scannerMinEdge", scanner.minEdge);
+
+  setInputValue("autoScanIntervalMs", auto.autoScanIntervalMs);
+  setInputValue("autoEntryProbability", auto.autoEntryProbability);
+  setInputValue("autoMinScore", auto.autoMinScore);
+  setInputValue("autoMinEdge", auto.autoMinEdge);
+}
+
+function readRuntimeConfigPayload() {
+  return {
+    scanner: {
+      intervalMs: Number(qs("scannerIntervalMs")?.value || 0),
+      minProbability: Number(qs("scannerMinProbability")?.value || 0),
+      minScore: Number(qs("scannerMinScore")?.value || 0),
+      minEdge: Number(qs("scannerMinEdge")?.value || 0)
+    },
+    auto: {
+      autoScanIntervalMs: Number(qs("autoScanIntervalMs")?.value || 0),
+      autoEntryProbability: Number(qs("autoEntryProbability")?.value || 0),
+      autoMinScore: Number(qs("autoMinScore")?.value || 0),
+      autoMinEdge: Number(qs("autoMinEdge")?.value || 0)
+    }
+  };
+}
+
+async function loadRuntimeConfig() {
+  try {
+    const data = await api("/api/runtime-config");
+    renderRuntimeConfig(data.config || {});
+  } catch (e) {
+    console.error("Runtime config error:", e.message);
+  }
+}
+
+async function saveRuntimeConfig() {
+  try {
+    await withButtonLock("saveRuntimeConfigBtn", async () => {
+      const payload = readRuntimeConfigPayload();
+      const data = await api("/api/runtime-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      renderRuntimeConfig(data.config || {});
+      setResult("Ajustes de scanner/auto actualizados.");
+      await Promise.allSettled([loadScanner(), loadAutoStatus(), loadStatus()]);
+    });
+  } catch (e) {
+    setResult(`No se pudieron guardar los ajustes: ${e.message}`, true);
+  }
+}
+
 async function loadStatus() {
   await guardedLoad("status", async () => {
     const data = await api("/api/status");
@@ -1129,6 +1195,7 @@ qs("useTakeProfit")?.addEventListener("change", syncManualRiskControls);
 qs("gridModeBtn")?.addEventListener("click", toggleGridMode);
 qs("sniperModeBtn")?.addEventListener("click", toggleSniperMode);
 qs("resetBotBtn")?.addEventListener("click", resetBotState);
+qs("saveRuntimeConfigBtn")?.addEventListener("click", saveRuntimeConfig);
 
 qs("statsDays")?.addEventListener("change", loadStatistics);
 qs("statsSymbol")?.addEventListener("change", loadStatistics);
@@ -1160,6 +1227,7 @@ syncManualRiskControls();
 (async function init() {
   try {
     await loadSymbols(false);
+    await loadRuntimeConfig();
     await refreshAll();
   } catch (e) {
     setResult(e.message, true);

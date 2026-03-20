@@ -1311,8 +1311,8 @@ async function executeDraftTrade(draftId, meta = {}) {
       autoOpened: Boolean(meta.autoOpened),
       autoOpenedAt: meta.autoOpened ? Date.now() : null,
       autoCloseTargetRoe: meta.autoOpened ? config.auto.autoTakeProfitRoe : null,
-      closeReason: trade.closeReason || null,
-      details: trade.details || {}
+      closeReason: null,
+      details: {}
     };
 
     activeTrades.set(tradeId, tradeRecord);

@@ -970,6 +970,50 @@ async function findOpenPositionByMarket(market) {
   return (list || []).find((p) => p.market === market && hasOpenPosition(p)) || null;
 }
 
+function inferPositionDirection(position) {
+  const candidates = [
+    position?.side,
+    position?.position_side,
+    position?.open_side,
+    position?.direction,
+    position?.type
+  ];
+
+  for (const raw of candidates) {
+    const value = String(raw || "").trim().toLowerCase();
+    if (!value) continue;
+    if (["sell", "short", "-1", "2"].includes(value)) return "SHORT";
+    if (["buy", "long", "1"].includes(value)) return "LONG";
+  }
+
+  const numericCandidates = [position?.side, position?.position_side, position?.open_side];
+  for (const raw of numericCandidates) {
+    const value = Number(raw);
+    if (!Number.isFinite(value)) continue;
+    if (value === 2 || value === -1) return "SHORT";
+    if (value === 1) return "LONG";
+  }
+
+  return "LONG";
+}
+
+function getExternalPositionKey(position, direction = inferPositionDirection(position)) {
+  const market = String(position?.market || "").toUpperCase();
+  const idCandidates = [
+    position?.position_id,
+    position?.positionId,
+    position?.id,
+    position?.pos_id
+  ];
+
+  for (const raw of idCandidates) {
+    const id = String(raw || "").trim();
+    if (id) return `COINEX:${market}:${id}`;
+  }
+
+  return `COINEX:${market}:${direction}`;
+}
+
 function inferOpenedAtFromPosition(position) {
   const candidates = [
     position?.created_at,
@@ -993,7 +1037,8 @@ async function registerExternalTradeFromPosition(position) {
   if (!market || !market.endsWith("USDT")) return null;
 
   const symbol = market.slice(0, -4);
-  const direction = String(position?.side || "").toLowerCase() === "sell" ? "SHORT" : "LONG";
+  const direction = inferPositionDirection(position);
+  const externalPositionKey = getExternalPositionKey(position, direction);
   const tradeId = makeId(`EXT_${symbol}`);
   const openedAt = inferOpenedAtFromPosition(position);
   const entryPrice = numberOrZero(position?.avg_entry_price || position?.open_price || position?.mark_price || position?.last);
@@ -1042,9 +1087,11 @@ async function registerExternalTradeFromPosition(position) {
     autoCloseTargetRoe: null,
     closeReason: null,
     externalTracked: true,
+    externalPositionKey,
     details: {
       source: "COINEX_EXTERNAL_POSITION",
       importedAt: Date.now(),
+      externalPositionKey,
       coinex: position || {}
     }
   };
@@ -1073,9 +1120,11 @@ async function syncExternalPositions() {
   try {
     const positions = await getCurrentPositions();
     const openPositions = (positions || []).filter((p) => hasOpenPosition(p));
-    const openMarkets = new Set(openPositions.map((p) => String(p.market || "").toUpperCase()));
-    const openPositionsByMarket = new Map(
-      openPositions.map((p) => [String(p.market || "").toUpperCase(), p])
+    const openPositionKeys = new Set(
+      openPositions.map((p) => getExternalPositionKey(p))
+    );
+    const openPositionsByKey = new Map(
+      openPositions.map((p) => [getExternalPositionKey(p), p])
     );
     let imported = 0;
     let closed = 0;
@@ -1083,9 +1132,18 @@ async function syncExternalPositions() {
     for (const position of openPositions) {
       const market = String(position?.market || "").toUpperCase();
       if (!market) continue;
+      const direction = inferPositionDirection(position);
+      const externalPositionKey = getExternalPositionKey(position, direction);
 
       const alreadyTracked = [...activeTrades.values()].some(
-        (trade) => trade.market === market && trade.status === "OPEN"
+        (trade) => trade.status === "OPEN" && (
+          trade.externalPositionKey === externalPositionKey
+          || (
+            trade.externalTracked
+            && trade.market === market
+            && trade.direction === direction
+          )
+        )
       );
       if (alreadyTracked) continue;
 
@@ -1095,11 +1153,20 @@ async function syncExternalPositions() {
 
     for (const trade of [...activeTrades.values()]) {
       if (trade.status !== "OPEN") continue;
-      if (!openMarkets.has(trade.market)) {
+      const tradeKey = trade.externalTracked
+        ? String(trade.externalPositionKey || `COINEX:${trade.market}:${trade.direction}`)
+        : null;
+      const stillOpen = trade.externalTracked
+        ? openPositionKeys.has(tradeKey)
+        : openPositions.some((p) => String(p.market || "").toUpperCase() === trade.market);
+
+      if (!stillOpen) {
         trade.status = "CLOSED";
         trade.closedAt = Date.now();
         trade.closeReason = "EXTERNAL_CLOSED";
-        const latestPosition = openPositionsByMarket.get(trade.market);
+        const latestPosition = trade.externalTracked
+          ? openPositionsByKey.get(tradeKey)
+          : openPositions.find((p) => String(p.market || "").toUpperCase() === trade.market);
         const closedPrice = numberOrZero(latestPosition?.mark_price || latestPosition?.last || trade.entryPrice);
         const pnlPct = trade.entryPrice > 0
           ? (trade.direction === "LONG"

@@ -607,7 +607,7 @@ function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move
   const accumulation = lateral && lowVolatility && rsi15 >= 45 && rsi15 <= 55 && volumeRatio > 0.95;
   const distribution = lateral && lowVolatility && rsi15 >= 45 && rsi15 <= 55 && volumeRatio > 1.02 && move15 < 0;
 
-  let state = "AMBIGUOUS";
+  let state = "TRANSITION";
   if (trendingUp && !lateral) state = "BULL_TREND";
   else if (trendingDown && !lateral) state = "BEAR_TREND";
   else if (lateral) state = "LATERAL_RANGE";
@@ -639,7 +639,7 @@ function analyzeMarketState({ trend1h, trend15m, rsi5, rsi15, rsi1h, move5, move
     structureClarity ? 1 : 0
   ];
   const confidence = Number((sma(evidence) * 100).toFixed(2));
-  const ambiguous = confidence < 60 || state === "AMBIGUOUS";
+  const ambiguous = confidence < 55 || state === "AMBIGUOUS";
 
   return {
     state: ambiguous ? "AMBIGUOUS" : state,

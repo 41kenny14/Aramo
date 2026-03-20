@@ -218,6 +218,7 @@ function buildEmptyStats(cfg, symbolsCount, activeTradesCount) {
     at: Date.now(),
     config: {
       batchSize: cfg.batchSize,
+      intervalMs: cfg.intervalMs,
       signalPeriod: cfg.signalPeriod,
       minProbability: cfg.minProbability,
       minScore: cfg.minScore,
@@ -331,6 +332,14 @@ export async function scanMarketBatch(symbols, activeTrades) {
 
   try {
     const cfg = getScannerConfig();
+    const now = Date.now();
+    const elapsedSinceLastRun = now - num(scannerState.lastRunAt);
+    const shouldThrottle = scannerState.lastRunAt > 0 && elapsedSinceLastRun < cfg.intervalMs;
+
+    if (shouldThrottle) {
+      return scannerState.findings;
+    }
+
     const stats = buildEmptyStats(cfg, symbols.length, activeTrades.length);
 
     const start = scannerState.batchOffset;
@@ -384,8 +393,6 @@ export async function scanMarketBatch(symbols, activeTrades) {
       stats.totals.accepted += 1;
       freshFindings.push(finding);
     }
-
-    const now = Date.now();
 
     const previousFresh = (scannerState.findings || []).filter(
       (x) => now - num(x.timestamp) <= cfg.findingTtlMs

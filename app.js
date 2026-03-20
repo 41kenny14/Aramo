@@ -599,7 +599,7 @@ function renderScannerStats(data) {
   statsEl.textContent =
     `Batch ${batch.start}-${batch.end} (${batch.size}) | ` +
     `inspected=${totals.inspected ?? 0} fulfilled=${totals.fulfilled ?? 0} accepted=${totals.accepted ?? 0} rejected=${totals.rejected ?? 0} errors=${totals.requestErrors ?? 0} kept=${totals.keptAfterMerge ?? 0}\n` +
-    `cfg: prob>=${cfg.minProbability} score>=${cfg.minScore} edge>=${cfg.minEdge} period=${cfg.signalPeriod} adx>=${cfg.minAdx15 ?? "-"} dist<=${cfg.maxAbsDistEma20_5 ?? "-"} body>=${cfg.minBodyStrength5 ?? "-"}\n` +
+    `cfg: interval=${cfg.intervalMs ?? "-"}ms prob>=${cfg.minProbability} score>=${cfg.minScore} edge>=${cfg.minEdge} period=${cfg.signalPeriod} adx>=${cfg.minAdx15 ?? "-"} dist<=${cfg.maxAbsDistEma20_5 ?? "-"} body>=${cfg.minBodyStrength5 ?? "-"}\n` +
     `rejectedBy: ` +
     `NO_TRADE=${rejectedBy.NO_TRADE ?? 0}, ` +
     `LOW_PROBABILITY=${rejectedBy.LOW_PROBABILITY ?? 0}, ` +

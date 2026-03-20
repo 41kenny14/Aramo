@@ -1235,10 +1235,25 @@ async function executeDraftTrade(draftId, meta = {}) {
 
     orderPlaced = true;
 
-    const position = await waitForPosition({ market, attempts: 18, intervalMs: 1200 });
+    let position = await waitForPosition({ market, attempts: 18, intervalMs: 1200 });
     if (!position) {
       await cancelAllPendingOrders(market);
-      throw new Error("La orden límite no se ejecutó a tiempo. Cancelada para no perseguir precio.");
+
+      if (meta.autoOpened) {
+        await placeFuturesOrder({
+          market,
+          side: draft.side,
+          type: "market",
+          amount: fixedByDecimals(adjustedSizing.finalAmount, basePrecision),
+          clientId: makeId(`${draft.direction}_MKT_FALLBACK`)
+        });
+
+        position = await waitForPosition({ market, attempts: 10, intervalMs: 700 });
+      }
+    }
+
+    if (!position) {
+      throw new Error("La orden límite no se ejecutó a tiempo y no se pudo confirmar entrada.");
     }
 
     const entryPrice = numberOrZero(position.avg_entry_price) || liveMarkPrice;

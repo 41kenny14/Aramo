@@ -99,6 +99,13 @@ const autoEntryDiagnostics = {
   lastRejectReason: null,
   lastRejectAt: 0
 };
+const externalSyncState = {
+  running: false,
+  lastRunAt: 0,
+  lastError: null,
+  imported: 0,
+  closed: 0
+};
 
 const MAX_DRAFT_AGE_MS = 60 * 1000;
 
@@ -963,6 +970,172 @@ async function findOpenPositionByMarket(market) {
   return (list || []).find((p) => p.market === market && hasOpenPosition(p)) || null;
 }
 
+function inferOpenedAtFromPosition(position) {
+  const candidates = [
+    position?.created_at,
+    position?.create_time,
+    position?.open_time,
+    position?.updated_at
+  ];
+
+  for (const raw of candidates) {
+    const value = numberOrZero(raw);
+    if (value > 0) {
+      return value > 1e12 ? value : value * 1000;
+    }
+  }
+
+  return Date.now();
+}
+
+async function registerExternalTradeFromPosition(position) {
+  const market = String(position?.market || "").toUpperCase();
+  if (!market || !market.endsWith("USDT")) return null;
+
+  const symbol = market.slice(0, -4);
+  const direction = String(position?.side || "").toLowerCase() === "sell" ? "SHORT" : "LONG";
+  const tradeId = makeId(`EXT_${symbol}`);
+  const openedAt = inferOpenedAtFromPosition(position);
+  const entryPrice = numberOrZero(position?.avg_entry_price || position?.open_price || position?.mark_price || position?.last);
+  const signalPeriod = config.auto.defaultSignalPeriod || "5min";
+
+  let signal = null;
+  try {
+    signal = await getSignalForSymbol(symbol, signalPeriod);
+  } catch (error) {
+    console.error("External sync signal error:", symbol, error.message);
+  }
+
+  const tradeRecord = {
+    tradeId,
+    symbol,
+    market,
+    side: direction === "LONG" ? "buy" : "sell",
+    direction,
+    confidence: signal?.confidence || "LOW",
+    score: numberOrZero(signal?.score),
+    edge: numberOrZero(getSignalEdge(signal || {})),
+    regime: signal?.regime || "UNKNOWN",
+    probabilities: signal?.probabilities || null,
+    setupType: signal?.setup?.type || "NONE",
+    adx15: numberOrZero(signal?.metrics?.adx15),
+    distEma20_5: numberOrZero(signal?.metrics?.distEma20_5),
+    bodyStrength5: numberOrZero(signal?.metrics?.bodyStrength5),
+    upperWick5: numberOrZero(signal?.metrics?.upperWick5),
+    lowerWick5: numberOrZero(signal?.metrics?.lowerWick5),
+    leverage: Math.max(1, Math.round(numberOrZero(position?.leverage || 1))),
+    percent: 0,
+    requestedPercent: 0,
+    usableMargin: numberOrZero(position?.margin_avbl),
+    notional: numberOrZero(position?.position_value),
+    amount: String(position?.open_interest || "0"),
+    entryPrice,
+    stopLoss: null,
+    takeProfit: null,
+    useStopLoss: false,
+    useTakeProfit: false,
+    signalPeriod,
+    openedAt,
+    status: "OPEN",
+    autoOpened: false,
+    autoOpenedAt: null,
+    autoCloseTargetRoe: null,
+    closeReason: null,
+    externalTracked: true,
+    details: {
+      source: "COINEX_EXTERNAL_POSITION",
+      importedAt: Date.now(),
+      coinex: position || {}
+    }
+  };
+
+  activeTrades.set(tradeId, tradeRecord);
+  markSymbolTradeOpen(tradeRecord.symbol);
+  logTradeOpen(tradeRecord);
+
+  const learningOpen = registerLearningTradeOpen({
+    trade: tradeRecord,
+    signal: signal || {},
+    learningMode: true,
+    mode: "externo"
+  });
+  if (learningOpen?.feedback) {
+    console.log(learningOpen.feedback);
+  }
+
+  return tradeRecord;
+}
+
+async function syncExternalPositions() {
+  if (externalSyncState.running) return;
+  externalSyncState.running = true;
+
+  try {
+    const positions = await getCurrentPositions();
+    const openPositions = (positions || []).filter((p) => hasOpenPosition(p));
+    const openMarkets = new Set(openPositions.map((p) => String(p.market || "").toUpperCase()));
+    const openPositionsByMarket = new Map(
+      openPositions.map((p) => [String(p.market || "").toUpperCase(), p])
+    );
+    let imported = 0;
+    let closed = 0;
+
+    for (const position of openPositions) {
+      const market = String(position?.market || "").toUpperCase();
+      if (!market) continue;
+
+      const alreadyTracked = [...activeTrades.values()].some(
+        (trade) => trade.market === market && trade.status === "OPEN"
+      );
+      if (alreadyTracked) continue;
+
+      const importedTrade = await registerExternalTradeFromPosition(position);
+      if (importedTrade) imported += 1;
+    }
+
+    for (const trade of [...activeTrades.values()]) {
+      if (trade.status !== "OPEN") continue;
+      if (!openMarkets.has(trade.market)) {
+        trade.status = "CLOSED";
+        trade.closedAt = Date.now();
+        trade.closeReason = "EXTERNAL_CLOSED";
+        const latestPosition = openPositionsByMarket.get(trade.market);
+        const closedPrice = numberOrZero(latestPosition?.mark_price || latestPosition?.last || trade.entryPrice);
+        const pnlPct = trade.entryPrice > 0
+          ? (trade.direction === "LONG"
+            ? ((closedPrice - trade.entryPrice) / trade.entryPrice) * 100
+            : ((trade.entryPrice - closedPrice) / trade.entryPrice) * 100)
+          : 0;
+        trade.pnlPct = Number(pnlPct.toFixed(4));
+
+        activeTrades.delete(trade.tradeId);
+        markSymbolTradeClose(trade.symbol, trade.pnlPct);
+        logTradeClose(trade.tradeId, { closeReason: trade.closeReason, closedPrice });
+        registerLearningTradeClose({
+          trade,
+          closeReason: trade.closeReason,
+          closedPrice,
+          pnlPct: trade.pnlPct,
+          closeTimestamp: trade.closedAt,
+          exitType: "externo"
+        });
+        closed += 1;
+      }
+    }
+
+    externalSyncState.lastRunAt = Date.now();
+    externalSyncState.lastError = null;
+    externalSyncState.imported = imported;
+    externalSyncState.closed = closed;
+  } catch (error) {
+    externalSyncState.lastRunAt = Date.now();
+    externalSyncState.lastError = error.message;
+    console.error("External sync error:", error.message);
+  } finally {
+    externalSyncState.running = false;
+  }
+}
+
 async function waitForPosition({ market, retries = 12, delayMs = 500, attempts, intervalMs }) {
   const finalRetries = numberOrZero(attempts) > 0 ? Math.floor(numberOrZero(attempts)) : retries;
   const finalDelayMs = numberOrZero(intervalMs) > 0 ? numberOrZero(intervalMs) : delayMs;
@@ -1698,6 +1871,7 @@ async function runAutoEntryCycle() {
 }
 
 async function autoTradingLoop() {
+  await syncExternalPositions();
   if (!runtime.autoEnabled) return;
   if (runtime.locked) return;
 
@@ -2071,6 +2245,7 @@ app.get("/api/status", async (_req, res) => {
       drafts,
       trackedTrades: tracked,
       scanner,
+      externalSync: externalSyncState,
       auto: {
         enabled: runtime.autoEnabled,
         autoEntryProbability: config.auto.autoEntryProbability,
